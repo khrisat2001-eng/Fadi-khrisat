@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import hmac
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -488,8 +489,17 @@ def _setup_needed_app(problem: str) -> FastAPI:
 
 # Top-level instance for hosts and tools that look for `app` (e.g. `fastapi run app/main.py`).
 # Without APP_ACCESS_TOKEN and CREDENTIAL_MASTER_KEY it serves only a "setup needed" message.
-try:
-    app = create_app()
-except (RuntimeError, ValueError) as exc:
-    log.warning("App not started: %s", exc)
-    app = _setup_needed_app(str(exc))
+VERCEL_MESSAGE = (
+    "This app can't run on Vercel. It needs an always-on server with a persistent disk: live price streams, "
+    "stop-loss checks and news polling run continuously, and the encrypted key store is a database file. "
+    "Vercel functions are short-lived with a read-only, temporary disk. Deploy it to Render, Railway, Fly.io or a VPS."
+)
+
+if os.environ.get("VERCEL"):
+    app = _setup_needed_app(VERCEL_MESSAGE)
+else:
+    try:
+        app = create_app()
+    except (RuntimeError, ValueError, OSError) as exc:
+        log.warning("App not started: %s", exc)
+        app = _setup_needed_app(str(exc))
