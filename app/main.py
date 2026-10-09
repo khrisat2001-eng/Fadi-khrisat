@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,6 +24,10 @@ from app.connections.store import Store
 from app.exchanges.base import Credentials
 from app.exchanges.registry import CONNECTORS
 from app.marketdata.supervisor import Connect, MarketDataManager, websockets_connect
+from app.news.classifier import Classifier
+from app.news.config import NewsConfig
+from app.news.service import NewsError, NewsService
+from app.news.sources import Fetcher, http_fetch
 from app.paper.engine import PaperTradingService
 from app.paper.store import TradingStore
 from app.risk.config import RiskConfig
@@ -80,6 +85,27 @@ class KillSwitchIn(BaseModel):
     reason: str = Field("", max_length=300)
 
 
+class SourceToggleIn(BaseModel):
+    enabled: bool
+
+
+class CalendarIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    scheduled_at: datetime
+    impact: str = Field(pattern="^(low|medium|high)$")
+    assets: list[str] = Field(default_factory=list, max_length=50)
+    source_url: str = Field(max_length=500)
+    time_verified: bool = False
+    status: str = Field("scheduled", pattern="^(scheduled|confirmed|changed|completed|cancelled)$")
+    notes: str = Field("", max_length=500)
+
+
+class CalendarUpdateIn(BaseModel):
+    status: str | None = Field(None, pattern="^(scheduled|confirmed|changed|completed|cancelled)$")
+    time_verified: bool | None = None
+    scheduled_at: datetime | None = None
+
+
 class SuspensionIn(BaseModel):
     scope: str = Field(pattern="^(global|exchange|asset)$")
     target: str = Field(max_length=40)
@@ -94,6 +120,9 @@ def create_app(
     market_connect: Connect = websockets_connect,
     start_market_data: bool = True,
     candle_fetcher: CandleFetcher = fetch_public_candles,
+    news_fetcher: Fetcher = http_fetch,
+    news_classifier: Classifier | None = None,
+    run_news_monitor: bool | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     if not settings.access_token or len(settings.access_token) < 16:
@@ -106,18 +135,24 @@ def create_app(
     vault = CredentialVault(key_provider or LocalKeyProvider.from_env())
     service = ConnectionService(store, vault, connector_factory)
     market = MarketDataManager(market_connect, on_alert=lambda level, msg: store.add_alert(None, level, msg))
-    paper = PaperTradingService(service, TradingStore(store), market, DecisionGate(), CandleService(candle_fetcher))
+    trading = TradingStore(store)
+    news = NewsService(store, trading, market, news_classifier, news_fetcher)
+    paper = PaperTradingService(service, trading, market, DecisionGate(), CandleService(candle_fetcher), news)
+    if run_news_monitor is None:
+        run_news_monitor = run_health_monitor
     session_value = hmac.new(settings.access_token.encode(), b"portal-session-v1", hashlib.sha256).hexdigest()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = None
+        tasks = []
         if start_market_data:
             await paper.sync_streams()
         if run_health_monitor:
-            task = asyncio.create_task(_health_loop(service, paper, settings.health_interval_seconds))
+            tasks.append(asyncio.create_task(_health_loop(service, paper, settings.health_interval_seconds)))
+        if run_news_monitor:
+            tasks.append(asyncio.create_task(_news_loop(news)))
         yield
-        if task:
+        for task in tasks:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -127,6 +162,7 @@ def create_app(
     app.state.service = service
     app.state.paper = paper
     app.state.market = market
+    app.state.news = news
 
     async def resync_streams() -> None:
         if start_market_data:
@@ -144,6 +180,10 @@ def create_app(
 
     @app.exception_handler(PortalError)
     async def portal_error(_: Request, exc: PortalError):
+        return JSONResponse({"error": exc.message}, status_code=exc.status)
+
+    @app.exception_handler(NewsError)
+    async def news_error(_: Request, exc: NewsError):
         return JSONResponse({"error": exc.message}, status_code=exc.status)
 
     @app.exception_handler(PermissionError)
@@ -344,6 +384,65 @@ def create_app(
         store.audit(None, "suspension_lifted", str(sid))
         return paper.trading.active_suspensions()
 
+    # --- news intelligence ------------------------------------------------------------
+    @app.get("/api/news", dependencies=auth)
+    async def news_feed(asset: str | None = None, exchange: str | None = None, category: str | None = None,
+                        sentiment: str | None = None, confirmation: str | None = None, severity: str | None = None,
+                        source: str | None = None, since: str | None = None, limit: int = 100):
+        return news.feed(asset, exchange, category, sentiment, confirmation, severity, source, since, max(1, min(limit, 300)))
+
+    @app.get("/api/news/overview", dependencies=auth)
+    async def news_overview():
+        assets = []
+        for c in store.list_connections():
+            if c["state"] != "PAPER":
+                continue
+            signals = {s["symbol"]: s for s in await paper.signals(c["id"])}
+            for symbol in c["selected_pairs"]:
+                ctx = await paper.build_context(c, symbol)
+                sig = signals.get(symbol) or {}
+                assets.append({"connection_id": c["id"], "exchange": c["exchange"], "symbol": symbol,
+                               "technical": {"status": sig.get("status"), "reasons": sig.get("reasons")},
+                               "news": ctx.news.as_dict() if ctx.news else None})
+        return {**news.overview(), "assets": assets}
+
+    @app.post("/api/news/poll", dependencies=auth)
+    async def news_poll():
+        return await news.poll_once()
+
+    @app.put("/api/news/sources/{source_id}", dependencies=auth)
+    async def news_source(source_id: str, body: SourceToggleIn):
+        return news.set_source_enabled(source_id, body.enabled)
+
+    @app.get("/api/news/config", dependencies=auth)
+    async def get_news_config():
+        return news.config().model_dump()
+
+    @app.put("/api/news/config", dependencies=auth)
+    async def put_news_config(body: NewsConfig):
+        return news.set_config(body).model_dump()
+
+    @app.get("/api/news/calendar", dependencies=auth)
+    async def news_calendar():
+        return news.calendar()
+
+    @app.post("/api/news/calendar", dependencies=auth)
+    async def add_calendar(body: CalendarIn):
+        return news.add_calendar(body.name, body.scheduled_at, body.impact, body.assets, body.source_url,
+                                 body.time_verified, body.status, body.notes)
+
+    @app.put("/api/news/calendar/{cal_id}", dependencies=auth)
+    async def update_calendar(cal_id: int, body: CalendarUpdateIn):
+        return news.update_calendar(cal_id, body.status, body.time_verified, body.scheduled_at)
+
+    @app.delete("/api/news/calendar/{cal_id}", dependencies=auth)
+    async def delete_calendar(cal_id: int):
+        return news.delete_calendar(cal_id)
+
+    @app.get("/api/news/performance", dependencies=auth)
+    async def news_performance():
+        return news.performance()
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -361,6 +460,15 @@ async def _health_loop(service: ConnectionService, paper: PaperTradingService, i
             await paper.sync_streams()
         except Exception as exc:  # keep monitoring no matter what
             log.error("Health check loop error: %s", type(exc).__name__)
+
+
+async def _news_loop(news: NewsService) -> None:
+    while True:
+        try:
+            await news.poll_once()
+        except Exception as exc:  # keep monitoring no matter what
+            log.error("News loop error: %s", type(exc).__name__)
+        await asyncio.sleep(news.config().poll_interval_seconds)
 
 
 def app_factory() -> FastAPI:  # used by: uvicorn app.main:app_factory --factory

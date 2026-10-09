@@ -76,6 +76,7 @@ async function loadPortal() {
   }
   await renderPaper(conns.filter((c) => c.state === "PAPER"));
   await renderRisk();
+  if (typeof renderNews === "function") await renderNews();
   show("portal-view");
 }
 
@@ -454,7 +455,20 @@ function decisionView(d, fill) {
   return h("div", { class: `decision ${d.status.toLowerCase()}` },
     h("p", {}, h("strong", {}, d.status), " · ", d.summary),
     fill ? h("p", {}, `Filled ${fill.qty} at ${Number(fill.price).toFixed(6)} (fee ${Number(fill.fee).toFixed(4)})`) : null,
-    h("ul", { class: "checks" }, d.checks.map((ch) => h("li", { class: ch.result }, `${ch.label}: ${ch.detail}`))));
+    h("ul", { class: "checks" }, d.checks.map((ch) => h("li", { class: ch.result }, `${ch.label}: ${ch.detail}`))),
+    newsUsed(d));
+}
+
+const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
+
+// Which news items were considered for a decision, with links to the original sources.
+function newsUsed(d) {
+  const n = d.inputs && d.inputs.news;
+  if (!n || !n.events || !n.events.length) return null;
+  return h("div", { class: "news-used" }, h("strong", {}, "News considered"),
+    h("ul", {}, n.events.map((e) => h("li", { class: `effect-${e.effect}` },
+      safeUrl(e.url) ? h("a", { href: safeUrl(e.url), target: "_blank", rel: "noopener noreferrer" }, e.title) : e.title,
+      ` · ${e.source || "unknown source"} · ${e.confirmation.replace(/_/g, " ")} · ${e.effect}: ${e.reason}`))));
 }
 
 function decisionsBox(c) {
@@ -463,7 +477,7 @@ function decisionsBox(c) {
     const list = await api("GET", `/api/decisions?connection_id=${c.id}`);
     box.replaceChildren(...list.slice(0, 20).map((d) => h("details", {},
       h("summary", {}, `${fmtTime(d.at)} · ${d.symbol} · ${d.status} · ${d.summary}`),
-      h("ul", { class: "checks" }, d.checks.map((ch) => h("li", { class: ch.result }, `${ch.label}: ${ch.detail}`))))));
+      h("ul", { class: "checks" }, d.checks.map((ch) => h("li", { class: ch.result }, `${ch.label}: ${ch.detail}`))), newsUsed(d))));
     if (!list.length) box.append(h("p", { class: "muted" }, "No decisions yet."));
   };
   load();

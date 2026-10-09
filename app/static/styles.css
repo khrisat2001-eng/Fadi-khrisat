@@ -81,3 +81,23 @@ td button { margin-right: 4px; padding: 3px 8px; font-size: 13px; }
 .checks li.warn { color: var(--warn); } .checks li.warn::marker { content: "! "; }
 .sig.buy_setup { color: var(--ok); font-weight: 600; } .sig.no_setup { color: var(--muted); }
 .sig.stale_data, .sig.insufficient_data { color: var(--warn); }
+/* news */
+.news-event { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.news-event.sev-critical { border-left-color: var(--bad); } .news-event.sev-high { border-left-color: var(--warn); }
+.news-head { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: baseline; }
+.news-event p { margin: 4px 0; }
+.news-event q { display: block; font-size: 13px; margin-left: 8px; }
+.badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.badge.strongly_positive, .badge.moderately_positive, .badge.confirmed { color: var(--ok); border-color: var(--ok); }
+.badge.strongly_negative, .badge.moderately_negative, .badge.disputed, .badge.critical { color: var(--bad); border-color: var(--bad); }
+.badge.uncertain, .badge.rumor, .badge.high, .badge.repeat { color: var(--warn); border-color: var(--warn); }
+.effect-fail { color: var(--bad); font-weight: 600; } .effect-wait, .effect-warn { color: var(--warn); font-weight: 600; } .effect-pass { color: var(--ok); }
+td.why { font-size: 13px; max-width: 520px; }
+.filters select, .filters input { flex: 1 1 130px; width: auto; }
+label.inline { display: flex; gap: 6px; align-items: center; }
+.row label.inline { flex: 0 0 auto; white-space: nowrap; }
+.news-used { font-size: 13px; margin-top: 6px; }
+.news-used ul { padding-left: 18px; margin: 4px 0; }
+.news-used li.effect-pass { font-weight: normal; color: var(--text); }
+a { color: var(--accent); overflow-wrap: anywhere; }

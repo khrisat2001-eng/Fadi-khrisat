@@ -27,7 +27,22 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 - "Don't chase" filter: blocks any entry, manual or strategy, when the price is more than 1 ATR above the breakout level, more than 2.5 ATR above EMA20, RSI is overheated, or momentum is fading on lower volume.
 - Signals are computed on the server and feed the decision gate's technical and extension checks. Missing or stale candles mean WAIT. Strategy orders need a setup; manual paper orders without one get a warning.
 
-Not built yet: automatic strategy execution (signals are acted on with one click), and the news intelligence engine. See the plan for the phases.
+**News intelligence** (Phases 3 and 4, safety-only):
+
+- Reads only allowlisted sources, each with a reliability tier: OKX and KuCoin announcement APIs, SEC and Federal Reserve press releases, the Ethereum Foundation blog and Bitcoin Core releases (tier 1, on). CoinDesk and Cointelegraph (tier 2) ship switched off until you've checked their feed terms. Fetching is HTTPS-only with time and size limits, and XML is parsed with `defusedxml`.
+- Every item keeps its link, the source's publication time and the time we first saw it. Items are deduplicated by canonical URL and headline, grouped into events, and old stories that come back are marked as repeats so they can't act as a new catalyst.
+- Assets are attributed from a registry. Tickers that are ordinary words (LINK, DOT, NEAR...) need a name, a `$TICKER` or a pair.
+- Confirmation status is decided by rules, not by AI: confirmed (official source, or two independent reputable outlets), credible, rumor, or disputed (denied by an official or reputable source, or sources conflict).
+- Classification into the four categories and six sentiment levels, plus severity, horizon, relevance, volatility risk and confidence. With `ANTHROPIC_API_KEY` set it uses Claude with structured outputs: the article is wrapped as untrusted data, the model has no tools, every stated fact must quote the article word for word or it is dropped, and text aimed at automated readers is flagged and downgraded. Without a key, or if the call fails, simple keyword rules are used and labelled as such.
+- Market reaction: the price when we first saw the news versus now, from our own feeds.
+- Scheduled events calendar with per-impact no-trade windows. Each entry needs a source link; unverified or stale times are shown as uncertain.
+- The gate's news check applies the confirmation matrix: unverified critical reports pause entries for an adaptive confirmation window; credible security incidents and exchange disruptions create a suspension; confirmed serious negative news blocks buys for a set time; positive news without a technical setup waits for price confirmation; uncertain or volatile news cuts the risk per trade. News never approves a trade, raises a size, widens a stop or turns off emergency controls.
+- Material news on an asset you hold raises an alert. The stop stays where it is and nothing is sold automatically.
+- Dashboard: news vs technicals by pair, a filterable feed with source links and facts kept apart from interpretation, the calendar, what news has done, source health, settings, and paper results split by whether news was in play.
+
+Data limitations: the source URLs above could not be reached from the build environment, so the parsers are tested against recorded-shape fixtures and need a check on a real deployment. There is no historical, timestamped news archive, so the news rules have not been backtested. Every item stores `available_at` so a point-in-time replay is possible once an archive or enough of our own history exists.
+
+Not built yet: automatic strategy execution (signals are acted on with one click) and backtesting. See the plan for the phases.
 
 ## Run locally
 

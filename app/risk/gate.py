@@ -66,6 +66,8 @@ class GateContext:
     pair_min_size: Decimal | None = None
     # Technical signal computed on the server from closed candles (never supplied by the client).
     signal: dict | None = None
+    # News assessment from the news engine (app.news.rules.NewsAssessment), computed for this asset and exchange.
+    news: Any = None
 
 
 @dataclass
@@ -167,8 +169,13 @@ class DecisionGate:
         add("suspensions", "No trading suspension", "fail" if hits else "pass",
             "; ".join(f"{s['scope']} {s['target']}: {s['reason']}" for s in hits) if hits else "None active.")
 
-        # 6. News
-        add("news", "News verified", "pass", "No news inputs are used yet (news engine not built), so nothing to verify.")
+        # 6. News (safety-only: it can block, delay or shrink an entry, never approve or enlarge one)
+        news = ctx.news
+        if news is None:
+            add("news", "News checked", "warn", "News engine unavailable, so recent news was not checked.")
+        else:
+            add("news", "News checked", news.result, news.detail)
+        news_mult = Decimal(str(max(0.0, min(1.0, news.size_multiplier)))) if news is not None else Decimal(1)
 
         # 7. Technical setup and over-extension (from closed candles)
         sig = ctx.signal
@@ -230,7 +237,7 @@ class DecisionGate:
 
             # 11. Sizing and portfolio limits
             eq = equity(ctx)
-            risk_pct = min(req.risk_pct or cfg.max_risk_per_trade_pct, cfg.max_risk_per_trade_pct)
+            risk_pct = min(req.risk_pct or cfg.max_risk_per_trade_pct, cfg.max_risk_per_trade_pct) * news_mult
             existing = next((p for p in ctx.positions if p["symbol"] == req.symbol), None)
             existing_value = existing["qty"] * ctx.marks.get(req.symbol, existing["avg_price"]) if existing else Decimal(0)
             if risk_u > 0 and eq > 0:
@@ -244,7 +251,8 @@ class DecisionGate:
                 add("sizing", "Position size", "fail" if too_small else "pass",
                     f"Size {qty} ≈ {value:.2f} {quote} (limited by {limiter}); below the minimum order." if too_small else
                     f"Size {qty} ≈ {value:.2f} {quote}, losing about {qty * risk_u:.2f} if the stop is hit "
-                    f"({qty * risk_u / eq * 100:.2f}% of {eq:.2f} equity; limited by {limiter}).")
+                    f"({qty * risk_u / eq * 100:.2f}% of {eq:.2f} equity; limited by {limiter})."
+                    + (f" Risk cut to {news_mult:.0%} because of news." if news_mult < 1 else ""))
             else:
                 add("sizing", "Position size", "fail", "Cannot size the position.")
 
@@ -272,6 +280,7 @@ class DecisionGate:
                 "bid": str(t.bid) if t else None, "ask": str(t.ask) if t else None,
                 "ticker_age_s": round(t.age_seconds(), 2) if t else None,
                 "risk_config": cfg.as_json(),
+                "news": news.as_dict() if news is not None else None,
                 "technical_signal": {k: sig.get(k) for k in ("status", "timeframe", "metrics", "reasons", "candle_time_ms")} if sig else None,
             },
         )
