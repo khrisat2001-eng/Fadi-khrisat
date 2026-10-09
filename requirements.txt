@@ -1,0 +1,2 @@
+# Installs this app and the dependencies listed in pyproject.toml.
+.
