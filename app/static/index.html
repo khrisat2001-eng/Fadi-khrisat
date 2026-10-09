@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exchange Connections</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Exchange Connections</h1>
+    <span class="mode-badge paper">PAPER TRADING · live trading locked</span>
+  </header>
+
+  <main>
+    <section id="login-view" hidden>
+      <div class="panel narrow">
+        <h2>Sign in</h2>
+        <p>Enter the app access token set on the server.</p>
+        <form id="login-form" autocomplete="off">
+          <input type="password" id="login-token" required aria-label="Access token" autocomplete="off">
+          <button type="submit">Sign in</button>
+          <p class="error" id="login-error"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="portal-view" hidden>
+      <div id="alerts"></div>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <section id="wizard-view" hidden>
+      <div class="panel">
+        <button class="link" id="wizard-back">← Back to connections</button>
+        <ol class="stepper" id="stepper"></ol>
+        <div id="wizard-body"></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="tpl-step-labels">
+    <li>Choose exchange</li><li>Create API key</li><li>Permissions</li><li>Enter key</li><li>Validate</li>
+    <li>Balances</li><li>Status</li><li>Allocation &amp; pairs</li><li>Paper trading</li><li>Live trading</li>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
