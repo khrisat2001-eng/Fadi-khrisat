@@ -59,6 +59,14 @@ Open http://localhost:8000 and sign in with `APP_ACCESS_TOKEN`. For local http, 
 
 Never paste exchange API keys into chat, email, code or URLs. The wizard form is the only place to enter them.
 
+## Deploy
+
+The app needs an always-on server with a persistent disk (live price streams, stop checks and news polling run continuously; keys and accounts live in a SQLite file). Vercel and other serverless hosts can't run it.
+
+- Start command: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}` (also in `railway.json` and `Procfile`). Run one instance only.
+- Attach a persistent volume and point `DATABASE_PATH` at it, e.g. `/data/portal.db`.
+- Set `APP_ACCESS_TOKEN` and `CREDENTIAL_MASTER_KEY` (back this one up: without it saved keys can't be decrypted). Optional: `ANTHROPIC_API_KEY`, `SERVER_EGRESS_IPS`, `NEWS_USER_AGENT`.
+
 ## Tests
 
 ```bash
