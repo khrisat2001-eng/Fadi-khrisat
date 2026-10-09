@@ -50,8 +50,10 @@ Not built yet: automatic strategy execution (signals are acted on with one click
 pip install -e ".[dev]"
 cp .env.example .env   # then fill in CREDENTIAL_MASTER_KEY and APP_ACCESS_TOKEN
 set -a; source .env; set +a
-uvicorn app.main:app_factory --factory --port 8000
+uvicorn app.main:app --port 8000      # or: fastapi run app/main.py
 ```
+
+Hosts that look for an `app` in `app/main.py` find it there. If `APP_ACCESS_TOKEN` or `CREDENTIAL_MASTER_KEY` is missing, the app still starts but only answers "Setup needed" with what to set.
 
 Open http://localhost:8000 and sign in with `APP_ACCESS_TOKEN`. For local http, set `SECURE_COOKIES=false`. In production, run it behind HTTPS only.
 

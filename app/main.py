@@ -473,3 +473,23 @@ async def _news_loop(news: NewsService) -> None:
 
 def app_factory() -> FastAPI:  # used by: uvicorn app.main:app_factory --factory
     return create_app()
+
+
+def _setup_needed_app(problem: str) -> FastAPI:
+    """Served when required settings are missing, so the host starts and says what to fix."""
+    setup = FastAPI(title="Setup needed", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @setup.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+    async def setup_needed(path: str):
+        return JSONResponse({"error": f"Setup needed: {problem}"}, status_code=503)
+
+    return setup
+
+
+# Top-level instance for hosts and tools that look for `app` (e.g. `fastapi run app/main.py`).
+# Without APP_ACCESS_TOKEN and CREDENTIAL_MASTER_KEY it serves only a "setup needed" message.
+try:
+    app = create_app()
+except (RuntimeError, ValueError) as exc:
+    log.warning("App not started: %s", exc)
+    app = _setup_needed_app(str(exc))
