@@ -27,6 +27,8 @@ from app.paper.engine import PaperTradingService
 from app.paper.store import TradingStore
 from app.risk.config import RiskConfig
 from app.risk.gate import DecisionGate, TradeRequest
+from app.strategy.config import StrategyConfig
+from app.strategy.service import CandleFetcher, CandleService, fetch_public_candles
 from app.security.vault import CredentialVault, KeyProvider, LocalKeyProvider
 
 log = logging.getLogger("app")
@@ -63,8 +65,9 @@ class PaperAccountIn(BaseModel):
 
 class PaperOrderIn(BaseModel):
     symbol: str = Field(max_length=40)
-    stop_price: Decimal = Field(gt=0)
-    take_profit_price: Decimal = Field(gt=0)
+    source: str = Field("manual", pattern="^(manual|strategy)$")
+    stop_price: Decimal | None = Field(None, gt=0)
+    take_profit_price: Decimal | None = Field(None, gt=0)
     risk_pct: Decimal | None = Field(None, gt=0, le=5)
 
 
@@ -90,6 +93,7 @@ def create_app(
     run_health_monitor: bool = True,
     market_connect: Connect = websockets_connect,
     start_market_data: bool = True,
+    candle_fetcher: CandleFetcher = fetch_public_candles,
 ) -> FastAPI:
     settings = settings or Settings()
     if not settings.access_token or len(settings.access_token) < 16:
@@ -102,7 +106,7 @@ def create_app(
     vault = CredentialVault(key_provider or LocalKeyProvider.from_env())
     service = ConnectionService(store, vault, connector_factory)
     market = MarketDataManager(market_connect, on_alert=lambda level, msg: store.add_alert(None, level, msg))
-    paper = PaperTradingService(service, TradingStore(store), market, DecisionGate())
+    paper = PaperTradingService(service, TradingStore(store), market, DecisionGate(), CandleService(candle_fetcher))
     session_value = hmac.new(settings.access_token.encode(), b"portal-session-v1", hashlib.sha256).hexdigest()
 
     @asynccontextmanager
@@ -275,8 +279,8 @@ def create_app(
 
     @app.post("/api/paper/{cid}/orders", dependencies=auth)
     async def paper_order(cid: str, body: PaperOrderIn):
-        req = TradeRequest(cid, body.symbol, "buy", body.stop_price, body.take_profit_price, body.risk_pct, source="manual")
-        result = paper.place_order(req)
+        req = TradeRequest(cid, body.symbol, "buy", body.stop_price, body.take_profit_price, body.risk_pct, source=body.source)
+        result = await paper.place_order(req)
         await resync_streams()
         return result
 
@@ -289,6 +293,18 @@ def create_app(
     @app.put("/api/paper/{cid}/positions/{symbol}/stop", dependencies=auth)
     async def paper_stop(cid: str, symbol: str, body: StopIn):
         return paper.update_stop(cid, symbol, body.stop_price)
+
+    @app.get("/api/strategy/{cid}/signals", dependencies=auth)
+    async def strategy_signals(cid: str):
+        return await paper.signals(cid)
+
+    @app.get("/api/strategy/config", dependencies=auth)
+    async def get_strategy_config():
+        return paper.strategy_config().model_dump()
+
+    @app.put("/api/strategy/config", dependencies=auth)
+    async def put_strategy_config(body: StrategyConfig):
+        return paper.set_strategy_config(body).model_dump()
 
     @app.get("/api/decisions", dependencies=auth)
     async def decisions(connection_id: str | None = None):

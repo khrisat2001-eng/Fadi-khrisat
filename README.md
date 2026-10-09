@@ -20,7 +20,14 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 - Stop-loss and take-profit are enforced on every price update. Stops can be tightened but never widened.
 - Risk controls: emergency stop, trading suspensions by asset, exchange or globally, and editable risk settings.
 
-Not built yet: candles and the technical strategy engine, and the news intelligence engine. See the plan for the phases.
+**Technical strategy** (Phase 2b):
+
+- Closed candles from OKX and KuCoin (5m, 15m, 1h or 4h), cached.
+- Trend breakout strategy: uptrend (EMA20 above EMA50, close above EMA50), close above the 20-candle resistance, breakout volume at least 1.5× average, RSI 50-75. It suggests a stop at 2 ATR and a target at 6 ATR. All settings are editable.
+- "Don't chase" filter: blocks any entry, manual or strategy, when the price is more than 1 ATR above the breakout level, more than 2.5 ATR above EMA20, RSI is overheated, or momentum is fading on lower volume.
+- Signals are computed on the server and feed the decision gate's technical and extension checks. Missing or stale candles mean WAIT. Strategy orders need a setup; manual paper orders without one get a warning.
+
+Not built yet: automatic strategy execution (signals are acted on with one click), and the news intelligence engine. See the plan for the phases.
 
 ## Run locally
 

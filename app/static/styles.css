@@ -78,3 +78,6 @@ input[type=text] { padding: 8px; border-radius: 8px; border: 1px solid var(--bor
 td button { margin-right: 4px; padding: 3px 8px; font-size: 13px; }
 .panel table { display: block; overflow-x: auto; }
 .row > input, .row > select { flex: 1 1 140px; width: auto; }
+.checks li.warn { color: var(--warn); } .checks li.warn::marker { content: "! "; }
+.sig.buy_setup { color: var(--ok); font-weight: 600; } .sig.no_setup { color: var(--muted); }
+.sig.stale_data, .sig.insufficient_data { color: var(--warn); }

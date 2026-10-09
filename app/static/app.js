@@ -328,6 +328,7 @@ async function renderPaper(paperConns) {
     root.append(h("section", { class: "panel section" },
       h("h2", {}, `${exName(c.exchange)} paper trading`),
       live,
+      signalsBox(c),
       orderForm(c),
       decisionsBox(c)));
   }
@@ -390,6 +391,41 @@ async function liveView(c, market) {
   return h("div", {}, parts);
 }
 
+function signalsBox(c) {
+  const box = h("div");
+  const out = h("div");
+  const load = async () => {
+    try {
+      const sigs = await api("GET", `/api/strategy/${c.id}/signals`);
+      box.replaceChildren(h("table", {},
+        h("thead", {}, h("tr", {}, ["Pair", "Signal", "Close", "RSI", "ATR", "Support", "Resistance", "Stop / target", ""].map((x) => h("th", {}, x)))),
+        h("tbody", {}, sigs.map((sg) => {
+          const m = sg.metrics || {};
+          return h("tr", {},
+            h("td", {}, sg.symbol),
+            h("td", { class: `sig ${sg.status.toLowerCase()}`, title: sg.reasons.join("\n") }, sg.status.replace("_", " ")),
+            ...[m.close, m.rsi, m.atr, m.support, m.resistance].map((x) => h("td", {}, x ?? "-")),
+            h("td", {}, sg.suggested_stop ? `${sg.suggested_stop} / ${sg.suggested_target}` : "-"),
+            h("td", {}, sg.status === "BUY_SETUP" ? h("button", { onclick: async () => {
+              out.replaceChildren();
+              try {
+                const r = await api("POST", `/api/paper/${c.id}/orders`, { symbol: sg.symbol, source: "strategy" });
+                out.append(decisionView(r.decision, r.fill));
+                document.dispatchEvent(new CustomEvent("decided", { detail: c.id }));
+              } catch (e) { out.append(h("p", { class: "error" }, e.message)); }
+            } }, "Buy with strategy") : null));
+        }))),
+        h("details", {}, h("summary", {}, "Why?"), sigs.map((sg) =>
+          h("div", {}, h("strong", {}, sg.symbol), h("ul", { class: "checks" }, sg.reasons.map((r) => h("li", {}, r)))))));
+    } catch (e) { box.replaceChildren(h("p", { class: "error" }, e.message)); }
+  };
+  load();
+  const timer = setInterval(() => { if (!document.body.contains(box)) clearInterval(timer); else load(); }, 15000);
+  return h("div", {}, h("h3", {}, "Strategy signals (trend breakout)"),
+    h("p", { class: "note" }, "Based on closed candles. A signal is only a suggestion: every order still goes through the decision gate."),
+    h("button", { class: "link", onclick: load }, "Refresh"), box, out);
+}
+
 function orderForm(c) {
   const sym = h("select", {}, c.selected_pairs.map((p) => h("option", { value: p }, p)));
   const stop = h("input", { type: "number", step: "any", min: "0", required: true });
@@ -437,7 +473,15 @@ function decisionsBox(c) {
 
 // --- risk controls ---------------------------------------------------------
 async function renderRisk() {
-  const [cfg, ks, susp] = await Promise.all([api("GET", "/api/risk/config"), api("GET", "/api/risk/kill-switch"), api("GET", "/api/risk/suspensions")]);
+  const [cfg, ks, susp, scfg] = await Promise.all([api("GET", "/api/risk/config"), api("GET", "/api/risk/kill-switch"),
+    api("GET", "/api/risk/suspensions"), api("GET", "/api/strategy/config")]);
+  const sInputs = {};
+  const sLabels = {
+    timeframe: "Timeframe (5m, 15m, 1h, 4h)", breakout_lookback: "Support/resistance lookback (candles)", ema_fast: "Fast EMA",
+    ema_slow: "Slow EMA", rsi_min: "Min RSI", rsi_max: "Max RSI (overheated above)", volume_multiple: "Breakout volume × average",
+    stop_atr: "Suggested stop (ATR)", target_atr: "Suggested target (ATR)", max_breakout_extension_atr: "Max distance above breakout (ATR)",
+    max_ema_extension_atr: "Max distance above fast EMA (ATR)",
+  };
   const err = h("p", { class: "error" });
   const inputs = {};
   const labels = {
@@ -476,6 +520,16 @@ async function renderRisk() {
         const body = Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value]));
         try { await api("PUT", "/api/risk/config", body); renderRisk(); } catch (e) { err.textContent = e.message; }
       } }, "Save risk settings")),
+    h("details", {}, h("summary", {}, "Strategy settings"),
+      h("div", { class: "grid2" }, Object.keys(sLabels).map((k) => {
+        sInputs[k] = h("input", { type: k === "timeframe" ? "text" : "number", step: "any", value: scfg[k] });
+        return h("label", {}, h("span", {}, sLabels[k]), sInputs[k]);
+      })),
+      h("button", { onclick: async () => {
+        err.textContent = "";
+        const body = { ...scfg, ...Object.fromEntries(Object.entries(sInputs).map(([k, el]) => [k, k === "timeframe" ? el.value : Number(el.value)])) };
+        try { await api("PUT", "/api/strategy/config", body); renderRisk(); } catch (e) { err.textContent = e.message; }
+      } }, "Save strategy settings")),
     err));
 }
 

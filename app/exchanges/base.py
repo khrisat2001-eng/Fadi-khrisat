@@ -11,6 +11,7 @@ from __future__ import annotations
 import enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 
 class Permission(str, enum.Enum):
@@ -109,6 +110,20 @@ class TradingPair:
     tick_size: str | None = None
 
 
+TIMEFRAMES = ("5m", "15m", "1h", "4h")
+TIMEFRAME_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+
+
+@dataclass(frozen=True)
+class Candle:
+    open_time_ms: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+
+
 @dataclass
 class CredentialField:
     name: str
@@ -148,6 +163,10 @@ class ExchangeConnector(ABC):
     @abstractmethod
     async def get_trading_pairs(self) -> list[TradingPair]:
         """Public spot instruments currently open for trading."""
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
+        """Closed candles only, oldest first. Public endpoint."""
+        raise NotImplementedError
 
     @abstractmethod
     async def aclose(self) -> None: ...

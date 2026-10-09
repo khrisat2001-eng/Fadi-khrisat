@@ -15,6 +15,8 @@ from app.marketdata.models import Ticker
 from app.marketdata.supervisor import MarketDataManager
 from app.risk.config import RiskConfig
 from app.risk.gate import PAPER_QUOTE, DecisionGate, GateContext, TradeRequest
+from app.strategy.config import StrategyConfig
+from app.strategy.service import CandleService, StrategyService
 
 from .store import TradingStore, utc_day_start_iso
 
@@ -22,12 +24,14 @@ log = logging.getLogger("app.paper")
 
 
 class PaperTradingService:
-    def __init__(self, connections: ConnectionService, trading: TradingStore, market: MarketDataManager, gate: DecisionGate):
+    def __init__(self, connections: ConnectionService, trading: TradingStore, market: MarketDataManager, gate: DecisionGate,
+                 candles: CandleService | None = None):
         self.connections = connections
         self.store = connections.store
         self.trading = trading
         self.market = market
         self.gate = gate
+        self.strategy = StrategyService(candles or CandleService(), self.strategy_config)
         market.add_listener(self.on_ticker)
 
     # --- settings ----------------------------------------------------------------------
@@ -38,6 +42,23 @@ class PaperTradingService:
         self.trading.set_setting("risk_config", cfg.as_json())
         self.store.audit(None, "risk_config_changed", str(cfg.as_json()))
         return cfg
+
+    def strategy_config(self) -> StrategyConfig:
+        return StrategyConfig(**(self.trading.get_setting("strategy_config") or {}))
+
+    def set_strategy_config(self, cfg: StrategyConfig) -> StrategyConfig:
+        self.trading.set_setting("strategy_config", cfg.model_dump())
+        self.store.audit(None, "strategy_config_changed", str(cfg.model_dump()))
+        return cfg
+
+    async def signals(self, connection_id: str) -> list[dict[str, Any]]:
+        conn = self._paper_connection(connection_id)
+        out = []
+        for symbol in conn["selected_pairs"]:
+            t = self.market.latest(conn["exchange"], symbol)
+            sig = await self.strategy.signal(conn["exchange"], symbol, float(t.ask) if t else None)
+            out.append(sig.as_dict())
+        return out
 
     def kill_switch(self) -> bool:
         return bool(self.trading.get_setting("kill_switch"))
@@ -92,7 +113,7 @@ class PaperTradingService:
         self.trading.delete_account(connection_id)
 
     # --- entries -----------------------------------------------------------------------
-    def build_context(self, conn: dict[str, Any], symbol: str) -> GateContext:
+    async def build_context(self, conn: dict[str, Any], symbol: str) -> GateContext:
         account = self.trading.get_account(conn["id"])
         positions = self.trading.positions(conn["id"])
         marks = {}
@@ -112,14 +133,28 @@ class PaperTradingService:
             suspensions=self.trading.active_suspensions(),
             kill_switch=self.kill_switch(),
             pair_min_size=Decimal(min_size) if min_size else None,
+            signal=await self._signal_for(conn, symbol),
         )
 
-    def place_order(self, req: TradeRequest) -> dict[str, Any]:
+    async def _signal_for(self, conn: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+        t = self.market.latest(conn["exchange"], symbol)
+        return (await self.strategy.signal(conn["exchange"], symbol, float(t.ask) if t else None)).as_dict()
+
+    async def place_order(self, req: TradeRequest) -> dict[str, Any]:
         conn = self.store.get_connection(req.connection_id)
         if conn is None:
             raise PortalError("Connection not found.", 404)
         cfg = self.risk_config()
-        decision = self.gate.evaluate(req, self.build_context(conn, req.symbol), cfg)
+        ctx = await self.build_context(conn, req.symbol)
+        if req.source == "strategy" and ctx.signal:
+            # Strategy orders use the strategy's own stop and target unless the user tightened them.
+            if req.stop_price is None and ctx.signal.get("suggested_stop"):
+                req.stop_price = Decimal(str(ctx.signal["suggested_stop"]))
+            if req.take_profit_price is None and ctx.signal.get("suggested_target"):
+                req.take_profit_price = Decimal(str(ctx.signal["suggested_target"]))
+        if req.stop_price is None or req.take_profit_price is None:
+            raise PortalError("A stop-loss and take-profit are required.")
+        decision = self.gate.evaluate(req, ctx, cfg)
         self.trading.add_decision({**decision.as_dict(), "connection_id": req.connection_id,
                                    "symbol": req.symbol, "side": req.side})
         result: dict[str, Any] = {"decision": decision.as_dict(), "fill": None}
