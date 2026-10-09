@@ -50,3 +50,14 @@ def test_master_key_must_be_32_bytes():
 ])
 def test_redaction(line):
     assert "s3cret-value" not in redact(line)
+
+
+def test_bad_master_key_explains_itself(monkeypatch):
+    import base64
+    good = base64.b64encode(os.urandom(32)).decode()
+    for bad in ["my-secret-password", good.rstrip("="), base64.b64encode(os.urandom(16)).decode()]:
+        monkeypatch.setenv("CREDENTIAL_MASTER_KEY", bad)
+        with pytest.raises(ValueError, match="44 characters"):
+            LocalKeyProvider.from_env()
+    monkeypatch.setenv("CREDENTIAL_MASTER_KEY", f" {good}\n")
+    assert LocalKeyProvider.from_env().key_id == "local-v1"
