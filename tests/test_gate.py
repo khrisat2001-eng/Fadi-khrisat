@@ -6,6 +6,7 @@ import pytest
 
 from app.marketdata.models import Ticker
 from app.risk.config import RiskConfig
+from app.news.rules import NewsAssessment
 from app.risk.gate import DecisionGate, GateContext, TradeRequest
 
 CFG = RiskConfig()
@@ -29,7 +30,7 @@ def ctx(**over):
         ticker=ticker(), stream_state="connected",
         account={"cash": D("10000"), "starting_balance": D("10000")},
         positions=[], marks={}, realized_pnl_today=D(0), suspensions=[], kill_switch=False,
-        signal=SETUP,
+        signal=SETUP, news=NewsAssessment("pass", "No relevant news."),
     )
     base.update(over)
     return GateContext(**base)
@@ -211,3 +212,35 @@ def test_token_expires(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: real() + 31)
     with pytest.raises(PermissionError, match="expired"):
         gate.verify(d.token, "c1", "BTC-USDT", "buy", d.qty)
+
+
+# --- news (safety-only) ----------------------------------------------------------------
+
+def test_news_wait_and_fail_block_entries():
+    d = gate.evaluate(req(), ctx(news=NewsAssessment("wait", "Unverified report; verifying.")), RiskConfig())
+    assert d.status == "WAIT" and d.token is None and "verifying" in d.summary
+    d = gate.evaluate(req(), ctx(news=NewsAssessment("fail", "Confirmed exploit.")), RiskConfig())
+    assert d.status == "REJECT" and d.token is None
+
+
+def test_news_can_shrink_but_never_grow_size():
+    cfg = RiskConfig(max_position_pct=D("100"))
+    base = gate.evaluate(req(), ctx(), cfg).qty
+    half = gate.evaluate(req(), ctx(news=NewsAssessment("warn", "Volatile.", size_multiplier=0.5)), cfg)
+    assert half.status == "APPROVE" and abs(half.qty - base / 2) < D("0.0001")
+    assert "Risk cut to 50%" in check(half, "sizing").detail
+    bigger = gate.evaluate(req(), ctx(news=NewsAssessment("pass", "Great news!", size_multiplier=3.0)), cfg)
+    assert bigger.qty == base
+
+
+def test_news_cannot_override_other_checks():
+    d = gate.evaluate(req(), ctx(kill_switch=True, news=NewsAssessment("pass", "Strongly positive.", size_multiplier=1.0)), RiskConfig())
+    assert d.status == "REJECT"
+    d = gate.evaluate(req(), ctx(suspensions=[{"scope": "asset", "target": "BTC", "reason": "x"}],
+                                 news=NewsAssessment("pass", "ok")), RiskConfig())
+    assert d.status == "REJECT"
+
+
+def test_missing_news_engine_is_reported():
+    d = gate.evaluate(req(), ctx(news=None), RiskConfig())
+    assert check(d, "news").result == "warn" and d.status == "APPROVE"

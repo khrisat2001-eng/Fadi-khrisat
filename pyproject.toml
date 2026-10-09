@@ -13,6 +13,8 @@ dependencies = [
   "cryptography>=42",
   "pydantic>=2.6",
   "websockets>=13",
+  "defusedxml>=0.7",
+  "anthropic>=1.13",
 ]
 
 [project.optional-dependencies]

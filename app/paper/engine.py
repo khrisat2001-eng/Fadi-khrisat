@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.connections.service import ConnectionService, PortalError
+from app.exchanges.base import TIMEFRAME_SECONDS
 from app.marketdata.models import Ticker
 from app.marketdata.supervisor import MarketDataManager
 from app.risk.config import RiskConfig
@@ -20,18 +21,22 @@ from app.strategy.service import CandleService, StrategyService
 
 from .store import TradingStore, utc_day_start_iso
 
+if TYPE_CHECKING:
+    from app.news.service import NewsService
+
 log = logging.getLogger("app.paper")
 
 
 class PaperTradingService:
     def __init__(self, connections: ConnectionService, trading: TradingStore, market: MarketDataManager, gate: DecisionGate,
-                 candles: CandleService | None = None):
+                 candles: CandleService | None = None, news: "NewsService | None" = None):
         self.connections = connections
         self.store = connections.store
         self.trading = trading
         self.market = market
         self.gate = gate
         self.strategy = StrategyService(candles or CandleService(), self.strategy_config)
+        self.news = news
         market.add_listener(self.on_ticker)
 
     # --- settings ----------------------------------------------------------------------
@@ -113,7 +118,7 @@ class PaperTradingService:
         self.trading.delete_account(connection_id)
 
     # --- entries -----------------------------------------------------------------------
-    async def build_context(self, conn: dict[str, Any], symbol: str) -> GateContext:
+    async def build_context(self, conn: dict[str, Any], symbol: str, source: str = "manual") -> GateContext:
         account = self.trading.get_account(conn["id"])
         positions = self.trading.positions(conn["id"])
         marks = {}
@@ -122,9 +127,17 @@ class PaperTradingService:
             if t:
                 marks[p["symbol"]] = t.bid
         min_size = next((p.get("min_size") for p in conn["available_pairs"] if p["symbol"] == symbol), None)
+        ticker = self.market.latest(conn["exchange"], symbol)
+        signal = await self._signal_for(conn, symbol)
+        news = None
+        if self.news is not None:
+            news = self.news.assess(
+                conn["exchange"], symbol, technical_setup=bool(signal and signal.get("entry_conditions_met")),
+                order_source=source, timeframe_seconds=TIMEFRAME_SECONDS[self.strategy_config().timeframe],
+                spread_bps=float(ticker.spread_bps) if ticker else None)
         return GateContext(
             connection=conn,
-            ticker=self.market.latest(conn["exchange"], symbol),
+            ticker=ticker,
             stream_state=self.market.stream_state(conn["exchange"]),
             account=account,
             positions=positions,
@@ -133,7 +146,8 @@ class PaperTradingService:
             suspensions=self.trading.active_suspensions(),
             kill_switch=self.kill_switch(),
             pair_min_size=Decimal(min_size) if min_size else None,
-            signal=await self._signal_for(conn, symbol),
+            signal=signal,
+            news=news,
         )
 
     async def _signal_for(self, conn: dict[str, Any], symbol: str) -> dict[str, Any] | None:
@@ -145,7 +159,7 @@ class PaperTradingService:
         if conn is None:
             raise PortalError("Connection not found.", 404)
         cfg = self.risk_config()
-        ctx = await self.build_context(conn, req.symbol)
+        ctx = await self.build_context(conn, req.symbol, req.source)
         if req.source == "strategy" and ctx.signal:
             # Strategy orders use the strategy's own stop and target unless the user tightened them.
             if req.stop_price is None and ctx.signal.get("suggested_stop"):
