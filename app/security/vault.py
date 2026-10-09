@@ -46,7 +46,16 @@ class LocalKeyProvider:
                 "CREDENTIAL_MASTER_KEY is not set. Generate one with: "
                 "python -c \"import os,base64;print(base64.b64encode(os.urandom(32)).decode())\""
             )
-        return cls(base64.b64decode(raw))
+        try:
+            kek = base64.b64decode(raw.strip(), validate=True)
+        except ValueError:
+            kek = b""
+        if len(kek) != 32:
+            raise ValueError(
+                "CREDENTIAL_MASTER_KEY is not a valid key. It must be 32 random bytes in base64 "
+                "(44 characters ending in '='). Generate one with: openssl rand -base64 32"
+            )
+        return cls(kek)
 
     def wrap(self, dek: bytes, aad: bytes) -> bytes:
         nonce = os.urandom(12)
