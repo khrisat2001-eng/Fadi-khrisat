@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -21,6 +22,11 @@ from app.connections.service import ConnectionService, ConnectorFactory, PortalE
 from app.connections.store import Store
 from app.exchanges.base import Credentials
 from app.exchanges.registry import CONNECTORS
+from app.marketdata.supervisor import Connect, MarketDataManager, websockets_connect
+from app.paper.engine import PaperTradingService
+from app.paper.store import TradingStore
+from app.risk.config import RiskConfig
+from app.risk.gate import DecisionGate, TradeRequest
 from app.security.vault import CredentialVault, KeyProvider, LocalKeyProvider
 
 log = logging.getLogger("app")
@@ -51,11 +57,39 @@ class LoginIn(BaseModel):
     token: SecretStr
 
 
+class PaperAccountIn(BaseModel):
+    starting_balance: Decimal | None = Field(None, gt=0, le=Decimal("1e12"))
+
+
+class PaperOrderIn(BaseModel):
+    symbol: str = Field(max_length=40)
+    stop_price: Decimal = Field(gt=0)
+    take_profit_price: Decimal = Field(gt=0)
+    risk_pct: Decimal | None = Field(None, gt=0, le=5)
+
+
+class StopIn(BaseModel):
+    stop_price: Decimal = Field(gt=0)
+
+
+class KillSwitchIn(BaseModel):
+    on: bool
+    reason: str = Field("", max_length=300)
+
+
+class SuspensionIn(BaseModel):
+    scope: str = Field(pattern="^(global|exchange|asset)$")
+    target: str = Field(max_length=40)
+    reason: str = Field(min_length=1, max_length=300)
+
+
 def create_app(
     settings: Settings | None = None,
     key_provider: KeyProvider | None = None,
     connector_factory: ConnectorFactory = default_connector_factory,
     run_health_monitor: bool = True,
+    market_connect: Connect = websockets_connect,
+    start_market_data: bool = True,
 ) -> FastAPI:
     settings = settings or Settings()
     if not settings.access_token or len(settings.access_token) < 16:
@@ -67,21 +101,32 @@ def create_app(
     store = Store(settings.database_path)
     vault = CredentialVault(key_provider or LocalKeyProvider.from_env())
     service = ConnectionService(store, vault, connector_factory)
+    market = MarketDataManager(market_connect, on_alert=lambda level, msg: store.add_alert(None, level, msg))
+    paper = PaperTradingService(service, TradingStore(store), market, DecisionGate())
     session_value = hmac.new(settings.access_token.encode(), b"portal-session-v1", hashlib.sha256).hexdigest()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task = None
+        if start_market_data:
+            await paper.sync_streams()
         if run_health_monitor:
-            task = asyncio.create_task(_health_loop(service, settings.health_interval_seconds))
+            task = asyncio.create_task(_health_loop(service, paper, settings.health_interval_seconds))
         yield
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await market.stop_all()
 
     app = FastAPI(title="Exchange Connections Portal", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.service = service
+    app.state.paper = paper
+    app.state.market = market
+
+    async def resync_streams() -> None:
+        if start_market_data:
+            await paper.sync_streams()
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -96,6 +141,10 @@ def create_app(
     @app.exception_handler(PortalError)
     async def portal_error(_: Request, exc: PortalError):
         return JSONResponse({"error": exc.message}, status_code=exc.status)
+
+    @app.exception_handler(PermissionError)
+    async def permission_error(_: Request, exc: PermissionError):
+        return JSONResponse({"error": str(exc)}, status_code=403)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError):
@@ -170,11 +219,15 @@ def create_app(
 
     @app.put("/api/connections/{cid}/settings", dependencies=auth)
     async def update_settings(cid: str, body: SettingsIn):
-        return service.update_settings(cid, body.allocation_pct, body.pairs)
+        view = service.update_settings(cid, body.allocation_pct, body.pairs)
+        await resync_streams()
+        return view
 
     @app.post("/api/connections/{cid}/paper", dependencies=auth)
     async def enable_paper(cid: str):
-        return service.enable_paper(cid)
+        view = service.enable_paper(cid)
+        await resync_streams()
+        return view
 
     @app.post("/api/connections/{cid}/live", dependencies=auth)
     async def request_live(cid: str):
@@ -186,7 +239,10 @@ def create_app(
 
     @app.delete("/api/connections/{cid}", dependencies=auth)
     async def disconnect(cid: str):
-        return service.disconnect(cid)
+        view = service.disconnect(cid)
+        paper.close_account(cid)
+        await resync_streams()
+        return view
 
     @app.get("/api/alerts", dependencies=auth)
     async def alerts():
@@ -197,6 +253,81 @@ def create_app(
         service.store.acknowledge_alert(alert_id)
         return {"ok": True}
 
+    # --- market data, paper trading and risk ---------------------------------------
+    @app.get("/api/market", dependencies=auth)
+    async def market_status():
+        return {
+            "streams": market.status(),
+            "tickers": [
+                {"exchange": t.exchange, "symbol": t.symbol, "bid": str(t.bid), "ask": str(t.ask), "last": str(t.last),
+                 "spread_bps": f"{t.spread_bps:.1f}", "age_seconds": round(t.age_seconds(), 1)}
+                for t in market.tickers()
+            ],
+        }
+
+    @app.get("/api/paper/{cid}", dependencies=auth)
+    async def paper_account(cid: str):
+        return paper.account_view(cid)
+
+    @app.post("/api/paper/{cid}/account", dependencies=auth)
+    async def paper_create_account(cid: str, body: PaperAccountIn):
+        return paper.create_account(cid, body.starting_balance)
+
+    @app.post("/api/paper/{cid}/orders", dependencies=auth)
+    async def paper_order(cid: str, body: PaperOrderIn):
+        req = TradeRequest(cid, body.symbol, "buy", body.stop_price, body.take_profit_price, body.risk_pct, source="manual")
+        result = paper.place_order(req)
+        await resync_streams()
+        return result
+
+    @app.post("/api/paper/{cid}/positions/{symbol}/close", dependencies=auth)
+    async def paper_close(cid: str, symbol: str):
+        fill = paper.close_position(cid, symbol)
+        await resync_streams()
+        return fill
+
+    @app.put("/api/paper/{cid}/positions/{symbol}/stop", dependencies=auth)
+    async def paper_stop(cid: str, symbol: str, body: StopIn):
+        return paper.update_stop(cid, symbol, body.stop_price)
+
+    @app.get("/api/decisions", dependencies=auth)
+    async def decisions(connection_id: str | None = None):
+        return paper.trading.decisions(connection_id)
+
+    @app.get("/api/risk/config", dependencies=auth)
+    async def get_risk_config():
+        return paper.risk_config().as_json()
+
+    @app.put("/api/risk/config", dependencies=auth)
+    async def put_risk_config(body: RiskConfig):
+        return paper.set_risk_config(body).as_json()
+
+    @app.get("/api/risk/kill-switch", dependencies=auth)
+    async def get_kill_switch():
+        return {"on": paper.kill_switch()}
+
+    @app.post("/api/risk/kill-switch", dependencies=auth)
+    async def set_kill_switch(body: KillSwitchIn):
+        paper.set_kill_switch(body.on, body.reason)
+        return {"on": paper.kill_switch()}
+
+    @app.get("/api/risk/suspensions", dependencies=auth)
+    async def list_suspensions():
+        return paper.trading.active_suspensions()
+
+    @app.post("/api/risk/suspensions", dependencies=auth)
+    async def add_suspension(body: SuspensionIn):
+        target = "*" if body.scope == "global" else body.target.strip().lower() if body.scope == "exchange" else body.target.strip().upper()
+        paper.trading.add_suspension(body.scope, target, body.reason)
+        store.audit(None, "suspension_added", f"{body.scope} {target}: {body.reason}")
+        return paper.trading.active_suspensions()
+
+    @app.delete("/api/risk/suspensions/{sid}", dependencies=auth)
+    async def lift_suspension(sid: int):
+        paper.trading.lift_suspension(sid)
+        store.audit(None, "suspension_lifted", str(sid))
+        return paper.trading.active_suspensions()
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -206,11 +337,12 @@ def create_app(
     return app
 
 
-async def _health_loop(service: ConnectionService, interval: int) -> None:
+async def _health_loop(service: ConnectionService, paper: PaperTradingService, interval: int) -> None:
     while True:
         await asyncio.sleep(interval)
         try:
             await service.check_all()
+            await paper.sync_streams()
         except Exception as exc:  # keep monitoring no matter what
             log.error("Health check loop error: %s", type(exc).__name__)
 
