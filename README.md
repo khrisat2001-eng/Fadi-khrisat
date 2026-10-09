@@ -12,7 +12,15 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 - Connection management: status, health, balances, last sync, test, sync, replace key, disconnect, alerts for authentication failures and connectivity problems, rate limiting with backoff, clock resync.
 - Paper trading can be switched on per connection. Live trading is locked and the API refuses it.
 
-Not built yet: WebSocket market data streams, the paper trading engine itself, the strategy engine, and the news intelligence engine. See the plan for the phases.
+**Market data and paper trading** (Phase 2):
+
+- Live ticker streams from OKX and KuCoin public WebSockets for the selected pairs, with heartbeats, silence detection, reconnect with backoff, and alerts when a stream drops.
+- Paper trading accounts in USDT. Fills use the live bid/ask plus configured slippage and fees.
+- A mandatory decision gate checks every entry: emergency stop, connection health, pair, fresh market data, suspensions, spread, a valid stop-loss and take-profit, net reward:risk after costs, position sizing, open-position count and the daily loss limit. Only approved orders get a short-lived signed token, and the engine refuses orders without one. Every decision is logged with all of its checks.
+- Stop-loss and take-profit are enforced on every price update. Stops can be tightened but never widened.
+- Risk controls: emergency stop, trading suspensions by asset, exchange or globally, and editable risk settings.
+
+Not built yet: candles and the technical strategy engine, and the news intelligence engine. See the plan for the phases.
 
 ## Run locally
 
