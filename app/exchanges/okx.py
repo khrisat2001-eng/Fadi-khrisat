@@ -10,10 +10,13 @@ import base64
 import hashlib
 import hmac
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from .base import (
+    TIMEFRAME_SECONDS,
     Balance,
+    Candle,
     CredentialField,
     ErrorKind,
     ExchangeError,
@@ -150,3 +153,17 @@ class OkxConnector(SignedHttpConnector):
             for i in data
             if i.get("state") == "live"
         ]
+
+    OKX_BARS = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H"}
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe {timeframe}")
+        path = f"/api/v5/market/candles?instId={symbol}&bar={self.OKX_BARS[timeframe]}&limit={min(limit, 300)}"
+        data = await self._request("GET", path, group="public", signed=False)
+        # Rows: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm], newest first. confirm "1" = closed.
+        rows = [r for r in data if len(r) < 9 or r[8] == "1"]
+        return sorted(
+            (Candle(int(r[0]), Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]), Decimal(r[5])) for r in rows),
+            key=lambda c: c.open_time_ms,
+        )

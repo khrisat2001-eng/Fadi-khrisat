@@ -9,6 +9,14 @@ from app.risk.config import RiskConfig
 from app.risk.gate import DecisionGate, GateContext, TradeRequest
 
 CFG = RiskConfig()
+SETUP = {"status": "BUY_SETUP", "timeframe": "15m", "entry_conditions_met": True, "over_extended": False,
+         "reasons": ["✓ Trend: up", "✓ Breakout: yes", "✓ Volume: 2×", "✓ Momentum: RSI 60", "✓ Not over-extended"]}
+NO_SETUP = {"status": "NO_SETUP", "timeframe": "15m", "entry_conditions_met": False, "over_extended": False,
+            "reasons": ["✓ Trend: up", "✗ Breakout: close 99 vs resistance 101", "✓ Volume", "✓ Momentum", "✓ Not over-extended"]}
+EXTENDED = {"status": "NO_SETUP", "timeframe": "15m", "entry_conditions_met": True, "over_extended": True,
+            "reasons": ["✓ Trend", "✓ Breakout", "✓ Volume", "✓ Momentum", "✗ Over-extended: Price is 3.0 ATR above the breakout level (max 1.0)"]}
+STALE = {"status": "STALE_DATA", "timeframe": "15m", "entry_conditions_met": False, "over_extended": None,
+         "reasons": ["Latest closed candle ended 90 minutes ago; candle data is stale."]}
 
 
 def ticker(bid="100", ask="100.05", age=0.5, symbol="BTC-USDT"):
@@ -21,6 +29,7 @@ def ctx(**over):
         ticker=ticker(), stream_state="connected",
         account={"cash": D("10000"), "starting_balance": D("10000")},
         positions=[], marks={}, realized_pnl_today=D(0), suspensions=[], kill_switch=False,
+        signal=SETUP,
     )
     base.update(over)
     return GateContext(**base)
@@ -48,7 +57,8 @@ def test_approves_valid_trade_and_sizes_by_risk():
     assert D("19.9") < d.qty < D("20")
     assert "max position size" in check(d, "sizing").detail
     assert check(d, "news").result == "pass"
-    assert check(d, "technical").result == "skipped"
+    assert check(d, "technical").result == "pass"
+    assert check(d, "extension").result == "pass"
 
 
 def test_risk_limits_size_when_stop_is_wide():
@@ -134,14 +144,30 @@ def test_only_buys_open_positions():
     assert gate.evaluate(req(side="sell"), ctx(), CFG).status == "REJECT"
 
 
-def test_strategy_orders_need_signal_and_extension_check():
-    assert gate.evaluate(req(source="strategy"), ctx(), CFG).status == "REJECT"
-    no_ext = gate.evaluate(req(source="strategy", strategy_signal={"entry_conditions_met": True}), ctx(), CFG)
-    assert check(no_ext, "extension").result == "fail"
-    ext = gate.evaluate(req(source="strategy", strategy_signal={"entry_conditions_met": True, "over_extended": True}), ctx(), CFG)
-    assert ext.status == "REJECT"
-    ok = gate.evaluate(req(source="strategy", strategy_signal={"entry_conditions_met": True, "over_extended": False}), ctx(), CFG)
-    assert ok.status == "APPROVE"
+def test_strategy_orders_need_a_setup():
+    d = gate.evaluate(req(source="strategy"), ctx(signal=NO_SETUP), CFG)
+    assert d.status == "REJECT" and "Breakout" in check(d, "technical").detail
+    assert gate.evaluate(req(source="strategy"), ctx(), CFG).status == "APPROVE"
+
+
+def test_manual_orders_without_setup_warn_but_pass():
+    d = gate.evaluate(req(), ctx(signal=NO_SETUP), CFG)
+    assert d.status == "APPROVE"
+    assert check(d, "technical").result == "warn"
+
+
+@pytest.mark.parametrize("source", ["manual", "strategy"])
+def test_over_extended_blocks_every_order(source):
+    d = gate.evaluate(req(source=source), ctx(signal=EXTENDED), CFG)
+    assert d.status == "REJECT"
+    assert "Don't chase" in check(d, "extension").detail
+
+
+@pytest.mark.parametrize("signal", [None, STALE])
+def test_missing_or_stale_candles_wait(signal):
+    d = gate.evaluate(req(), ctx(signal=signal), CFG)
+    assert d.status == "WAIT"
+    assert check(d, "technical").result == "wait"
 
 
 @pytest.mark.parametrize("over", [
@@ -152,9 +178,8 @@ def test_strategy_orders_need_signal_and_extension_check():
 ])
 def test_strong_signals_cannot_bypass_risk_controls(over):
     """A maximal 'news'/strategy signal with override flags changes nothing when a safety check fails."""
-    signal = {"entry_conditions_met": True, "over_extended": False, "news_score": 1.0, "confidence": 1.0,
-              "override_risk": True, "force": True, "bypass_gate": True}
-    d = gate.evaluate(req(source="strategy", strategy_signal=signal, risk_pct=D("5")), ctx(**over), CFG)
+    signal = {**SETUP, "news_score": 1.0, "confidence": 1.0, "override_risk": True, "force": True, "bypass_gate": True}
+    d = gate.evaluate(req(source="strategy", risk_pct=D("5")), ctx(**{"signal": signal, **over}), CFG)
     assert d.status != "APPROVE" and d.token is None
 
 

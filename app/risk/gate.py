@@ -33,18 +33,17 @@ class TradeRequest:
     connection_id: str
     symbol: str
     side: str  # only "buy" opens positions (spot, long only)
-    stop_price: Decimal
-    take_profit_price: Decimal
+    stop_price: Decimal | None  # filled from the strategy's suggestion for strategy orders
+    take_profit_price: Decimal | None
     risk_pct: Decimal | None = None
     source: str = "manual"  # manual | strategy
-    strategy_signal: dict | None = None
 
 
 @dataclass
 class Check:
     name: str
     label: str
-    result: str  # pass | fail | wait | skipped
+    result: str  # pass | warn | fail | wait | skipped  (only fail and wait block)
     detail: str
 
     def as_dict(self) -> dict[str, str]:
@@ -65,6 +64,8 @@ class GateContext:
     suspensions: list[dict[str, Any]]
     kill_switch: bool
     pair_min_size: Decimal | None = None
+    # Technical signal computed on the server from closed candles (never supplied by the client).
+    signal: dict | None = None
 
 
 @dataclass
@@ -169,19 +170,24 @@ class DecisionGate:
         # 6. News
         add("news", "News verified", "pass", "No news inputs are used yet (news engine not built), so nothing to verify.")
 
-        # 7. Strategy / technical setup and extension
-        if req.source == "manual":
-            add("technical", "Technical setup", "skipped", "Manual paper order: no strategy signal is evaluated.")
-            add("extension", "Not over-extended", "skipped", "Needs candle data from the strategy engine (not built yet).")
+        # 7. Technical setup and over-extension (from closed candles)
+        sig = ctx.signal
+        if sig is None or sig.get("status") in ("INSUFFICIENT_DATA", "STALE_DATA") or sig.get("over_extended") is None:
+            why = "; ".join((sig or {}).get("reasons") or ["No technical analysis available."])
+            add("technical", "Technical setup", "wait", why)
+            add("extension", "Not over-extended", "wait", "Can't check without current candle data.")
         else:
-            sig = req.strategy_signal or {}
-            valid = bool(sig.get("entry_conditions_met"))
-            add("technical", "Technical setup", "pass" if valid else "fail",
-                "Strategy entry conditions are met." if valid else "No valid strategy signal.")
-            ext = sig.get("over_extended")
-            add("extension", "Not over-extended", "fail" if ext or ext is None else "pass",
-                "Price is too extended from the setup." if ext else
-                "Strategy did not report an extension check." if ext is None else "Within limits.")
+            failed = [r[2:] for r in sig.get("reasons", []) if r.startswith("✗") and "Over-extended" not in r]
+            if sig.get("entry_conditions_met"):
+                add("technical", "Technical setup", "pass", f"Trend breakout setup on {sig.get('timeframe')} candles.")
+            elif req.source == "strategy":
+                add("technical", "Technical setup", "fail", "No strategy setup: " + "; ".join(failed))
+            else:
+                add("technical", "Technical setup", "warn",
+                    "No strategy setup (" + "; ".join(failed) + "). Allowed only because this is a manual paper order.")
+            ext = [r.split(": ", 1)[1] for r in sig.get("reasons", []) if r.startswith("✗ Over-extended")]
+            add("extension", "Not over-extended", "fail" if sig.get("over_extended") else "pass",
+                "Don't chase: " + "; ".join(ext) if sig.get("over_extended") else "Price is within extension limits.")
 
         # 8. Liquidity
         if t is not None:
@@ -266,6 +272,7 @@ class DecisionGate:
                 "bid": str(t.bid) if t else None, "ask": str(t.ask) if t else None,
                 "ticker_age_s": round(t.age_seconds(), 2) if t else None,
                 "risk_config": cfg.as_json(),
+                "technical_signal": {k: sig.get(k) for k in ("status", "timeframe", "metrics", "reasons", "candle_time_ms")} if sig else None,
             },
         )
         if status == "APPROVE":

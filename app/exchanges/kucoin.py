@@ -9,11 +9,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import time
 from decimal import Decimal
 from typing import Any
 
 from .base import (
+    TIMEFRAME_SECONDS,
     Balance,
+    Candle,
     CredentialField,
     ErrorKind,
     ExchangeError,
@@ -157,3 +160,21 @@ class KucoinConnector(SignedHttpConnector):
             for s in data or []
             if s.get("enableTrading")
         ]
+
+    KUCOIN_TYPES = {"5m": "5min", "15m": "15min", "1h": "1hour", "4h": "4hour"}
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe {timeframe}")
+        step = TIMEFRAME_SECONDS[timeframe]
+        end = int(time.time())
+        start = end - step * (limit + 1)
+        path = f"/api/v1/market/candles?type={self.KUCOIN_TYPES[timeframe]}&symbol={symbol}&startAt={start}&endAt={end}"
+        data = await self._request("GET", path, group="public", signed=False)
+        # Rows: [time(s), open, close, high, low, volume, turnover], newest first.
+        candles = sorted(
+            (Candle(int(r[0]) * 1000, Decimal(r[1]), Decimal(r[3]), Decimal(r[4]), Decimal(r[2]), Decimal(r[5])) for r in data or []),
+            key=lambda c: c.open_time_ms,
+        )
+        # KuCoin includes the candle still forming; keep closed candles only.
+        return [c for c in candles if c.open_time_ms // 1000 + step <= end][-limit:]

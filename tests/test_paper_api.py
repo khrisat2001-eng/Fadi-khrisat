@@ -171,3 +171,70 @@ def test_disconnect_removes_paper_account(client, paper):
     client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
     client.delete(f"/api/connections/{paper}")
     assert client.get(f"/api/paper/{paper}").json()["account"] is None
+
+
+# --- strategy integration ------------------------------------------------------------
+def test_signals_endpoint(client, paper, candle_feed):
+    candle_feed.pattern = "breakout"
+    sigs = client.get(f"/api/strategy/{paper}/signals").json()
+    assert {s["symbol"] for s in sigs} == {"BTC-USDT", "ETH-USDT"}
+    assert all(s["status"] == "BUY_SETUP" for s in sigs)
+
+
+def test_costs_can_eat_a_strategy_edge(client, paper, candle_feed):
+    # 2 ATR stop / 4 ATR target on a quiet market: gross 2:1, but fees and
+    # slippage take it below the 1.5 net minimum, so the gate says no.
+    candle_feed.pattern = "breakout"
+    cfg = client.get("/api/strategy/config").json()
+    client.put("/api/strategy/config", json={**cfg, "target_atr": 4})
+    client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
+    price(client, 125.65, 125.70)
+    r = client.post(f"/api/paper/{paper}/orders", json={"symbol": "BTC-USDT", "source": "strategy"}).json()
+    assert r["decision"]["status"] == "REJECT" and "Net reward:risk" in r["decision"]["summary"]
+
+
+def test_strategy_order_uses_suggested_stop_and_target(client, paper, candle_feed):
+    candle_feed.pattern = "breakout"
+    client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
+    price(client, 125.65, 125.70)
+    r = client.post(f"/api/paper/{paper}/orders", json={"symbol": "BTC-USDT", "source": "strategy"}).json()
+    assert r["decision"]["status"] == "APPROVE", r["decision"]["summary"]
+    pos = client.get(f"/api/paper/{paper}").json()["positions"][0]
+    assert D(pos["stop_price"]) < D("125") < D("129") < D(pos["take_profit"])
+    inputs = client.get(f"/api/decisions?connection_id={paper}").json()[0]["inputs"]
+    assert inputs["technical_signal"]["status"] == "BUY_SETUP"
+
+
+def test_strategy_order_without_setup_is_rejected(client, paper, candle_feed):
+    candle_feed.pattern = "down"
+    client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
+    price(client, 100)
+    r = client.post(f"/api/paper/{paper}/orders", json={"symbol": "BTC-USDT", "source": "strategy"})
+    body = r.json()
+    assert r.status_code == 200 and body["decision"]["status"] == "REJECT" and body["fill"] is None
+
+
+def test_chasing_is_blocked_even_for_manual_orders(client, paper, candle_feed):
+    candle_feed.pattern = "breakout"
+    client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
+    price(client, 130, 130.05)  # far above the ~125.3 breakout level
+    r = buy(client, paper, stop="127", tp="140")
+    assert r["decision"]["status"] == "REJECT"
+    assert any(c["name"] == "extension" and c["result"] == "fail" for c in r["decision"]["checks"])
+
+
+def test_candle_outage_means_wait(client, paper, candle_feed):
+    from app.exchanges.base import ErrorKind, ExchangeError
+    candle_feed.error = ExchangeError(ErrorKind.EXCHANGE_UNAVAILABLE)
+    client.post(f"/api/paper/{paper}/account", json={"starting_balance": "10000"})
+    price(client, 100)
+    assert buy(client, paper)["decision"]["status"] == "WAIT"
+
+
+def test_strategy_config_round_trip(client):
+    cfg = client.get("/api/strategy/config").json()
+    assert cfg["timeframe"] == "15m"
+    cfg["timeframe"] = "1h"
+    assert client.put("/api/strategy/config", json=cfg).json()["timeframe"] == "1h"
+    cfg["ema_fast"] = 100
+    assert client.put("/api/strategy/config", json=cfg).status_code == 422
