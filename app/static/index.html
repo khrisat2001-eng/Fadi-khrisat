@@ -27,13 +27,15 @@
 
     <section id="portal-view" hidden>
       <nav class="tabs" id="tabs" aria-label="Sections">
-        <button data-tab="home">Home</button>
-        <button data-tab="trading">Trading details</button>
+        <button data-tab="trade">Trade</button>
+        <button data-tab="home">Overview</button>
         <button data-tab="news">News</button>
         <button data-tab="exchanges">Exchanges</button>
         <button data-tab="risk">Safety settings</button>
+        <button data-tab="trading">Advanced</button>
       </nav>
-      <div data-pane="home"><div id="home"></div><div id="alerts"></div></div>
+      <div data-pane="trade" hidden><div id="trade"></div></div>
+      <div data-pane="home" hidden><div id="home"></div><div id="alerts"></div></div>
       <div data-pane="trading" hidden><div id="paper"></div></div>
       <div data-pane="news" hidden><div id="news"></div></div>
       <div data-pane="exchanges" hidden><div id="cards" class="cards"></div></div>
@@ -57,5 +59,6 @@
   <script src="/static/app.js"></script>
   <script src="/static/news.js"></script>
   <script src="/static/home.js"></script>
+  <script src="/static/trade.js"></script>
 </body>
 </html>

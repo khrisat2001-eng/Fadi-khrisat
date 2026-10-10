@@ -78,6 +78,7 @@ async function loadPortal() {
   await renderRisk();
   if (typeof renderNews === "function") await renderNews();
   if (typeof renderHome === "function") { await renderHome(); startHomeTimer(); }
+  if (typeof loadTrade === "function") { await loadTrade(); startTradeTimer(); }
   show("portal-view");
 }
 

@@ -79,3 +79,50 @@ def test_home_summarises_mode_and_accounts(client, paper, candle_feed):  # noqa:
     assert acct["autopilot"]["on"] is False and home["activity"] == []
     client.put(f"/api/autopilot/{paper}", json={"on": False})
     assert client.get(f"/api/autopilot/{paper}").json()["on"] is False
+
+
+def _hold(client, cid, candle_feed):
+    """Autopilot buys BTC on the breakout, then the position is backdated so later candles count as after entry."""
+    setup(client, cid, candle_feed)
+    client.put(f"/api/autopilot/{cid}", json={"on": True})
+    trading = client.app_ref.state.paper.trading
+    trading._exec("UPDATE paper_positions SET opened_at = '2000-01-01T00:00:00+00:00'")
+    return trading.position(cid, "BTC-USDT")
+
+
+def test_autopilot_sells_when_the_trend_breaks(client, paper, candle_feed):  # noqa: F811
+    _hold(client, paper, candle_feed)
+    candle_feed.pattern = "down"  # latest close is far below the fast EMA
+    client.app_ref.state.paper.strategy.candles._cache.clear()
+    price(client, 125, 125.05)  # still above the stop, so only the trend rule can sell
+    run(client)
+    assert client.get(f"/api/paper/{paper}").json()["positions"] == []
+    checks = {p["symbol"]: p for p in client.get(f"/api/autopilot/{paper}").json()["pairs"]}
+    assert checks["BTC-USDT"]["state"] == "sold" and "trend weakened" in checks["BTC-USDT"]["text"]
+    feed = client.get("/api/home").json()["activity"]
+    assert any(i["detail"].startswith("Autopilot sold") for i in feed)
+
+
+def test_autopilot_raises_the_stop_but_never_lowers_it(client, paper, candle_feed):  # noqa: F811
+    pos = _hold(client, paper, candle_feed)
+    trading = client.app_ref.state.paper.trading
+    trading.set_stop(pos["id"], pos["stop_price"] - 5)  # pretend the stop was set further down
+    run(client)
+    raised = trading.position(paper, "BTC-USDT")["stop_price"]
+    assert raised > pos["stop_price"] - 5
+    trading.set_stop(pos["id"], raised + 1)  # a higher stop is never lowered
+    run(client)
+    assert trading.position(paper, "BTC-USDT")["stop_price"] == raised + 1
+
+
+def test_markets_are_ranked_and_chart_has_overlays(client, paper, candle_feed):  # noqa: F811
+    setup(client, paper, candle_feed)
+    m = client.get(f"/api/markets/{paper}").json()
+    assert m["best"] in ("BTC-USDT", "ETH-USDT") and m["markets"][0]["score"] == 100
+    assert m["markets"][0]["checks"][0]["ok"] is True and m["markets"][0]["change_24h_pct"] is not None
+    c = client.get(f"/api/chart/{paper}/BTC-USDT").json()
+    assert len(c["candles"]) == 100 and len(c["ema_fast"]) == 100 and c["resistance"]
+    assert c["position"] is None and c["signal"]["status"] == "BUY_SETUP"
+    client.put(f"/api/autopilot/{paper}", json={"on": True})
+    c = client.get(f"/api/chart/{paper}/BTC-USDT").json()
+    assert c["position"]["stop"] < c["position"]["entry"] and c["markers"][0]["side"] == "buy"

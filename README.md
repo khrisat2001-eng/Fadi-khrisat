@@ -42,10 +42,12 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 
 Data limitations: the source URLs above could not be reached from the build environment, so the parsers are tested against recorded-shape fixtures and need a check on a real deployment. There is no historical, timestamped news archive, so the news rules have not been backtested. Every item stores `available_at` so a point-in-time replay is possible once an archive or enough of our own history exists.
 
-**Home screen and paper Autopilot**:
+**Trade screen and Auto-trade** (practice money only):
 
-- The app opens on Home: mode (practice money, real money locked), Autopilot on or off, account value, total and today's profit or loss, and open trades. Below that, each paper account shows what Autopilot sees for every pair, the open trades with the prices they will sell at, and a plain-language activity feed with the reason for every buy, sale and blocked setup. Trading details, News, Exchanges and Safety settings each have their own tab.
-- Autopilot is a per-connection switch, off by default and paper-only. Every 30 seconds it checks the strategy signal for each selected pair. A buy setup on a new closed candle becomes a strategy order that goes through the same decision gate as a click, so news, the emergency stop, suspensions and every risk limit apply. It makes at most one attempt per pair per candle and skips pairs it already holds. Sales stay automatic at the stop-loss or take-profit. Autopilot never sells, widens a stop or touches real money.
+- The app opens on an exchange-style Trade screen (dark, like OKX and KuCoin): a market list ranked by chance, a candlestick chart with volume, EMA20/EMA50, the breakout level, your entry, stop-loss and take-profit lines and buy/sell markers, a Buy/Sell panel and tabs for open positions, trade history and the Auto-trade log.
+- "Chance" is a 0-100 opportunity score: 20 points for each of the strategy's chart conditions (uptrend, breakout, volume, momentum) and 20 for not being over-extended. The best pair with a buy setup is marked BEST. The Buy panel lists the same conditions in plain words.
+- One AUTO-TRADE switch per exchange, off by default. Every 30 seconds it studies the chart of each selected pair. It buys when there is a buy setup on a new closed candle and every safety check passes (same decision gate as a click, so news, the emergency stop, suspensions and risk limits all apply), at most once per pair per candle. For pairs it holds it sells when a closed candle after the entry finishes below EMA20, and raises the stop-loss as the price rises (stops never move down). The stop-loss and take-profit are also enforced on every price update. Both exit rules can be switched off in the strategy settings.
+- An Overview tab summarises account value, profit or loss and recent activity with the reason for every buy, sale and blocked setup. News, Exchanges, Safety settings and Advanced each have their own tab.
 
 Not built yet: backtesting. See the plan for the phases.
 

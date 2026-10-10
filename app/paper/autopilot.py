@@ -3,13 +3,16 @@
 When switched on for a paper connection, each run checks the strategy signal
 for every selected pair. A BUY_SETUP on a new closed candle becomes an order
 that goes through the same decision gate as a click on "Buy with strategy".
-At most one attempt is made per pair per candle. Exits are already automatic
-(stop-loss and take-profit in the paper engine). The autopilot never sells,
-never widens stops and cannot touch real money.
+At most one attempt is made per pair per candle. For pairs it holds, it sells
+when a closed candle after the entry finishes below the fast EMA, and raises
+the stop as price rises (stops never move down). Stop-loss and take-profit are
+also enforced on every price tick by the paper engine. It cannot touch real money.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from app.connections.service import PortalError
@@ -22,20 +25,25 @@ from .home import fmt_num
 log = logging.getLogger("app.autopilot")
 
 STATE_KEY = "autopilot"
-PLAIN_REASON = {
-    "Trend": "The price is not in an uptrend.",
-    "Breakout": "The price has not broken above its recent high.",
-    "Volume": "Trading volume is too low to trust a breakout.",
-    "Momentum": "Momentum is outside the buy range.",
-    "Over-extended": "The price has already run too far, so it waits for a pullback.",
+PLAIN_REASON = {  # condition: (when met, when not met)
+    "Trend": ("The price is in an uptrend.", "The price is not in an uptrend."),
+    "Breakout": ("The price broke above its recent high.", "The price has not broken above its recent high."),
+    "Volume": ("Trading volume backs the move.", "Trading volume is too low to trust a breakout."),
+    "Momentum": ("Momentum is in the buy range.", "Momentum is outside the buy range."),
+    "Not over-extended": ("The price has not run too far.", "The price has already run too far."),
+    "Over-extended": ("The price has not run too far.", "The price has already run too far, so it waits for a pullback."),
 }
 
 
 def plain_reason(reason: str) -> str:
     """'✗ Trend: close 100 vs EMA50 106' -> 'The price is not in an uptrend. (Trend: close 100 vs EMA50 106)'"""
+    ok = reason.startswith("✓ ")
     text = reason[2:] if reason[:2] in ("✗ ", "✓ ") else reason
     key = text.split(":", 1)[0]
-    return f"{PLAIN_REASON[key]} ({text})" if key in PLAIN_REASON else text
+    if key not in PLAIN_REASON:
+        return text
+    plain = PLAIN_REASON[key][0 if ok else 1]
+    return plain if key == text else f"{plain} ({text})"
 
 
 class Autopilot:
@@ -98,8 +106,9 @@ class Autopilot:
                 checks[symbol] = self._check(symbol, "paused", "Emergency stop is on, so no new trades.")
             return attempted
         for symbol in conn["selected_pairs"]:
-            if self.paper.trading.position(cid, symbol) is not None:
-                checks[symbol] = self._check(symbol, "holding", "Already holding this pair. Stop-loss and take-profit are watched.")
+            pos = self.paper.trading.position(cid, symbol)
+            if pos is not None:
+                checks[symbol] = await self._manage(conn, pos)
                 continue
             try:
                 sig = await self.paper._signal_for(conn, symbol)
@@ -127,6 +136,39 @@ class Autopilot:
                 checks[symbol] = self._check(symbol, "blocked", f"Setup found but the safety checks said no. {d['summary']}")
         await self.paper.sync_streams()
         return attempted
+
+    async def _manage(self, conn: dict[str, Any], pos: dict[str, Any]) -> dict[str, Any]:
+        """For a held pair: sell on a trend break, otherwise raise the stop as price rises."""
+        symbol, cfg = pos["symbol"], self.paper.strategy_config()
+        holding = "Holding. It sells automatically at the stop-loss or take-profit"
+        try:
+            sig = await self.paper._signal_for(conn, symbol)
+        except Exception as exc:  # keep the existing stop and target if analysis fails
+            log.warning("Autopilot exit check error for %s: %s", symbol, type(exc).__name__)
+            return self._check(symbol, "holding", holding + ".")
+        m = sig.get("metrics") or {}
+        if sig["status"] in ("STALE_DATA", "INSUFFICIENT_DATA") or "close" not in m:
+            return self._check(symbol, "holding", holding + ". Chart data is not available right now.")
+        candle_open = datetime.fromtimestamp(sig["candle_time_ms"] / 1000, timezone.utc)
+        after_entry = candle_open >= datetime.fromisoformat(pos["opened_at"])
+        if cfg.exit_on_trend_break and after_entry and m["close"] < m["ema_fast"]:
+            why = f"a candle closed at {fmt_num(m['close'])}, below the fast average {fmt_num(m['ema_fast'])}."
+            if self.paper.strategy_exit(conn["id"], symbol, "the trend weakened: " + why):
+                return self._check(symbol, "sold", "Sold because the trend weakened: " + why)
+            return self._check(symbol, "holding", "Wants to sell (trend weakened) but has no fresh price yet. Will retry.")
+        if cfg.trailing_stop and m.get("atr"):
+            new_stop = Decimal(str(m["close"])) - Decimal(str(cfg.stop_atr)) * Decimal(str(m["atr"]))
+            new_stop = new_stop.quantize(Decimal("1e-8"))
+            if new_stop > pos["stop_price"]:
+                try:
+                    self.paper.update_stop(conn["id"], symbol, new_stop)
+                    return self._check(symbol, "holding", f"Price rose, so the stop-loss moved up to {fmt_num(new_stop)} "
+                                       "to protect profit. It never moves down.")
+                except PortalError:
+                    pass  # new stop at or above the bid: keep the current one
+        target = f" or take-profit {fmt_num(pos['take_profit'])}" if pos["take_profit"] is not None else ""
+        return self._check(symbol, "holding", f"{holding}: stop-loss {fmt_num(pos['stop_price'])}{target}. "
+                           "It also sells if a candle closes below the fast average.")
 
     async def _enter(self, conn: dict[str, Any], symbol: str) -> dict[str, Any]:
         req = TradeRequest(conn["id"], symbol, "buy", None, None, None, source="strategy", automatic=True)

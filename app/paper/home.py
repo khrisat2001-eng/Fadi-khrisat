@@ -8,7 +8,8 @@ if TYPE_CHECKING:
     from .autopilot import Autopilot
     from .engine import PaperTradingService
 
-EXIT_WORDS = {"stop_loss": "Stop-loss hit", "take_profit": "Take-profit hit", "manual_close": "Closed by you"}
+EXIT_WORDS = {"stop_loss": "Stop-loss hit", "take_profit": "Take-profit hit", "manual_close": "Sold by you",
+              "strategy_exit": "Autopilot sold: the trend weakened (candle closed below the fast average)"}
 
 
 def fmt_num(x: Any, nd: int = 6) -> str:

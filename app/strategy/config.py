@@ -19,6 +19,8 @@ class StrategyConfig(BaseModel):
     target_atr: float = Field(6.0, gt=0, le=30, description="Suggested target = entry + this × ATR")
     max_breakout_extension_atr: float = Field(1.0, gt=0, le=10, description="Too far above the breakout level")
     max_ema_extension_atr: float = Field(2.5, gt=0, le=20, description="Too far above the fast EMA")
+    exit_on_trend_break: bool = Field(True, description="Autopilot sells when a candle closes below the fast EMA")
+    trailing_stop: bool = Field(True, description="Autopilot raises the stop as price rises (never lowers it)")
     max_candle_age_multiple: float = Field(2.0, ge=1, le=10, description="Candles older than this many bars are stale")
 
     @model_validator(mode="after")

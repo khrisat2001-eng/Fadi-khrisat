@@ -2,7 +2,7 @@
 "use strict";
 
 const AUTOPILOT_STATE = {
-  bought: ["Bought", "ok"], holding: ["Holding", "ok"], waiting: ["Waiting", "muted"],
+  bought: ["Bought", "ok"], holding: ["Holding", "ok"], sold: ["Sold", "ok"], waiting: ["Waiting", "muted"],
   blocked: ["Blocked by safety check", "warn"], paused: ["Paused", "bad"], error: ["Retrying", "warn"],
 };
 const FEED_ICON = { buy: "▲", win: "✓", loss: "▼", blocked: "■" };
@@ -16,7 +16,7 @@ function showTab(name) {
 }
 
 for (const b of document.querySelectorAll("#tabs [data-tab]")) b.addEventListener("click", () => showTab(b.dataset.tab));
-showTab((() => { try { return localStorage.getItem("tab") || "home"; } catch (_) { return "home"; } })());
+showTab((() => { try { return localStorage.getItem("tab") || "trade"; } catch (_) { return "trade"; } })());
 
 // --- helpers ------------------------------------------------------------------------
 const money = (x) => Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -72,8 +72,8 @@ function gettingStarted(data) {
     h("ol", { class: "steps" },
       step(connected, "Connect OKX or KuCoin with a read-and-trade API key.", goExchanges),
       step(paper, "Choose your trading pairs and turn on paper trading for that exchange.", goExchanges),
-      step(false, "Create a paper account with practice money.", paper ? h("button", { class: "link", onclick: () => showTab("trading") }, "Open Trading details") : null),
-      step(false, "Turn on Autopilot here on Home.", null)));
+      step(false, "Create a paper account with practice money.", paper ? h("button", { class: "link", onclick: () => showTab("trade") }, "Open Trade") : null),
+      step(false, "Switch on AUTO-TRADE on the Trade tab.", null)));
 }
 
 function accountPanel(a) {
@@ -94,7 +94,7 @@ function accountPanel(a) {
       return h("li", {}, h("div", {}, h("strong", {}, p.symbol), " ", h("span", { class: `chip ${cls}` }, label),
         h("span", { class: "muted" }, ` · ${timeOnly(p.at)}`)), h("div", { class: "why" }, p.text));
     })) : h("p", { class: "muted" }, "Checking the pairs now…"))
-    : h("p", { class: "muted" }, "Autopilot is off, so nothing will be bought automatically. You can still buy by hand under Trading details.");
+    : h("p", { class: "muted" }, "Autopilot is off, so nothing will be bought automatically. You can still buy and sell yourself on the Trade tab.");
 
   const positions = a.positions.length ? h("table", {},
     h("thead", {}, h("tr", {}, ["Pair", "Bought at", "Price now", "Profit/loss", "Sells at a loss below", "Sells at a profit above", ""].map((x) => h("th", {}, x)))),

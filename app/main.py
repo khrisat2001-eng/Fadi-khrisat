@@ -30,6 +30,7 @@ from app.news.config import NewsConfig
 from app.news.service import NewsError, NewsService
 from app.news.sources import Fetcher, http_fetch
 from app.paper.autopilot import Autopilot
+from app.paper.charts import chart_view, markets_view
 from app.paper.engine import PaperTradingService
 from app.paper.home import home_view
 from app.paper.store import TradingStore
@@ -388,6 +389,14 @@ def create_app(
             await autopilot.run_once()  # first check right away, so the Home screen fills in
             status = autopilot.status(cid)
         return status
+
+    @app.get("/api/markets/{cid}", dependencies=auth)
+    async def markets(cid: str):
+        return await markets_view(paper, cid)
+
+    @app.get("/api/chart/{cid}/{symbol}", dependencies=auth)
+    async def chart(cid: str, symbol: str):
+        return await chart_view(paper, cid, symbol)
 
     @app.get("/api/home", dependencies=auth)
     async def home():
