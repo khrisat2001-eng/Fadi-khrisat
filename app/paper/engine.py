@@ -207,6 +207,19 @@ class PaperTradingService:
             raise PortalError("No current price for this pair, so the paper close can't be priced. Try again when market data is back.", 409)
         return self._close(conn, symbol, t.bid, "manual_close")
 
+    def strategy_exit(self, connection_id: str, symbol: str, why: str) -> dict[str, Any] | None:
+        """Sell a whole position because the strategy's exit rule fired. Needs a fresh price."""
+        conn = self.store.get_connection(connection_id)
+        t = self.market.latest(conn["exchange"], symbol) if conn else None
+        if t is None or t.age_seconds() > self.risk_config().max_data_age_seconds:
+            return None
+        fill = self._close(conn, symbol, t.bid, "strategy_exit")
+        if fill:
+            self.store.add_alert(connection_id, "info",
+                                 f"Autopilot sold {conn['exchange'].upper()} {symbol} (paper): {why} "
+                                 f"P&L {Decimal(fill['realized_pnl']):.2f} {PAPER_QUOTE}.")
+        return fill
+
     def update_stop(self, connection_id: str, symbol: str, new_stop: Decimal) -> dict[str, Any]:
         conn = self.store.get_connection(connection_id)
         pos = self.trading.position(connection_id, symbol)

@@ -77,17 +77,27 @@ async function loadPortal() {
   await renderPaper(conns.filter((c) => c.state === "PAPER"));
   await renderRisk();
   if (typeof renderNews === "function") await renderNews();
+  if (typeof renderHome === "function") { await renderHome(); startHomeTimer(); }
+  if (typeof loadTrade === "function") { await loadTrade(); startTradeTimer(); }
   show("portal-view");
 }
 
 function renderAlerts(alerts) {
   const box = $("alerts");
   box.replaceChildren();
-  for (const a of alerts) {
-    box.append(h("div", { class: `alert ${a.level}` },
-      h("span", {}, `${fmtTime(a.created_at)} · ${a.message}`),
-      h("button", { class: "link", onclick: async () => { await api("POST", `/api/alerts/${a.id}/ack`); loadPortal(); } }, "Dismiss")));
+  if (alerts.length) box.append(h("h2", { class: "section" }, "Notifications"));
+  const shown = alerts.slice(0, 5);
+  if (alerts.length > shown.length) {
+    box.append(h("p", { class: "note" }, `Showing the latest 5 of ${alerts.length}. `,
+      h("button", { class: "link", onclick: () => { box.replaceChildren(); alerts.forEach(addAlert); } }, "Show all")));
   }
+  shown.forEach(addAlert);
+}
+
+function addAlert(a) {
+  $("alerts").append(h("div", { class: `alert ${a.level}` },
+    h("span", {}, `${fmtTime(a.created_at)} · ${a.message}`),
+    h("button", { class: "link", onclick: async () => { await api("POST", `/api/alerts/${a.id}/ack`); loadPortal(); } }, "Dismiss")));
 }
 
 function emptyCard(ex, last) {

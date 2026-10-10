@@ -39,6 +39,7 @@ class Signal:
     suggested_stop: float | None = None
     suggested_target: float | None = None
     candle_time_ms: int | None = None
+    score: int = 0  # 0-100: 20 points per entry condition met, 20 for not being over-extended
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -104,6 +105,7 @@ def evaluate(symbol: str, candles: list[Candle], cfg: StrategyConfig, live_price
     if rsi_prev is not None and rsi_now > 65 and rsi_now < rsi_prev and vols[-1] < vols[-2]:
         ext_reasons.append("Momentum fading: RSI falling from a high level on lower volume")
     extended = bool(ext_reasons)
+    score = 20 * sum((trend_up, breakout, vol_ok, rsi_ok)) + (0 if extended else 20)
     reasons += ["✗ Over-extended: " + r for r in ext_reasons] or ["✓ Not over-extended"]
 
     return Signal(
@@ -122,4 +124,5 @@ def evaluate(symbol: str, candles: list[Candle], cfg: StrategyConfig, live_price
         suggested_stop=_r(price - cfg.stop_atr * atr_now) if atr_now else None,
         suggested_target=_r(price + cfg.target_atr * atr_now) if atr_now else None,
         candle_time_ms=last.open_time_ms,
+        score=score,
     )
