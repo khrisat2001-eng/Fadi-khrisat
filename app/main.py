@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
 from app import logging_utils
-from app.config import Settings
+from app.config import Settings, explain_setting
 from app.connections.service import ConnectionService, ConnectorFactory, PortalError, default_connector_factory
 from app.connections.store import Store
 from app.exchanges.base import Credentials
@@ -127,7 +127,11 @@ def create_app(
 ) -> FastAPI:
     settings = settings or Settings()
     if not settings.access_token or len(settings.access_token) < 16:
-        raise RuntimeError("APP_ACCESS_TOKEN must be set to a random value of at least 16 characters.")
+        raise RuntimeError(
+            explain_setting("APP_ACCESS_TOKEN", settings.access_token,
+                            f"only {len(settings.access_token)} characters long")
+            + " It must be a random value of at least 16 characters."
+        )
     logging_utils.install()
 
     if settings.database_path != ":memory:":
