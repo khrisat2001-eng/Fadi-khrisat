@@ -61,3 +61,23 @@ def test_bad_master_key_explains_itself(monkeypatch):
             LocalKeyProvider.from_env()
     monkeypatch.setenv("CREDENTIAL_MASTER_KEY", f" {good}\n")
     assert LocalKeyProvider.from_env().key_id == "local-v1"
+
+
+def test_missing_settings_say_what_the_server_sees(monkeypatch):
+    from app.config import Settings
+    from app.main import create_app
+    monkeypatch.delenv("APP_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("APP_ACCESS_TOKEN ", "x" * 20)  # trailing space in the name
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "web")
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+    with pytest.raises(RuntimeError) as err:
+        create_app(Settings())
+    msg = str(err.value)
+    assert "APP_ACCESS_TOKEN is not set" in msg and "'APP_ACCESS_TOKEN '" in msg
+    assert "service 'web' in environment 'production'" in msg and "x" * 20 not in msg
+    monkeypatch.setenv("APP_ACCESS_TOKEN", "short")
+    with pytest.raises(RuntimeError, match="set but only 5 characters long"):
+        create_app(Settings())
+    monkeypatch.delenv("CREDENTIAL_MASTER_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="CREDENTIAL_MASTER_KEY is not set.*openssl"):
+        LocalKeyProvider.from_env()

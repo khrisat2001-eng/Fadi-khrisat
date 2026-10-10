@@ -20,6 +20,7 @@ from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from app.config import explain_setting
 from app.exchanges.base import Credentials
 
 
@@ -43,8 +44,8 @@ class LocalKeyProvider:
         raw = os.environ.get("CREDENTIAL_MASTER_KEY")
         if not raw:
             raise RuntimeError(
-                "CREDENTIAL_MASTER_KEY is not set. Generate one with: "
-                "python -c \"import os,base64;print(base64.b64encode(os.urandom(32)).decode())\""
+                explain_setting("CREDENTIAL_MASTER_KEY", "", "")
+                + " Generate one with: openssl rand -base64 32"
             )
         try:
             kek = base64.b64decode(raw.strip(), validate=True)
