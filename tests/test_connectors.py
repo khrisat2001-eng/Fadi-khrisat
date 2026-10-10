@@ -213,3 +213,11 @@ async def test_kucoin_pairs_only_enabled():
 def test_credentials_repr_hides_secrets():
     text = repr(CREDS) + str(CREDS)
     assert "s3cret" not in text and "pass-phrase" not in text
+
+
+def test_unexpected_errors_show_what_the_exchange_said():
+    from app.exchanges.base import ErrorKind, ExchangeError
+    assert ExchangeError(ErrorKind.UNEXPECTED, "51155", "Restricted region").plain_message.endswith(
+        "The exchange said: code 51155, Restricted region.")
+    assert "country" in ExchangeError(ErrorKind.UNEXPECTED, detail="http 403").plain_message
+    assert ExchangeError(ErrorKind.INVALID_KEY, "50111", "x").plain_message.startswith("The exchange doesn't recognise")

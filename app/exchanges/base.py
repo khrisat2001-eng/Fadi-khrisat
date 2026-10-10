@@ -67,7 +67,14 @@ class ExchangeError(Exception):
 
     @property
     def plain_message(self) -> str:
-        return PLAIN_MESSAGES[self.kind]
+        msg = PLAIN_MESSAGES[self.kind]
+        if self.kind != ErrorKind.UNEXPECTED:
+            return msg
+        if self.detail == "http 403" and not self.exchange_code:
+            return (msg + " It refused the request outright (HTTP 403). This usually means the exchange blocks "
+                    "the country our server runs in. Move the server to a region the exchange serves.")
+        said = ", ".join(x for x in (f"code {self.exchange_code}" if self.exchange_code else "", self.detail) if x)
+        return f"{msg} The exchange said: {said}." if said else msg
 
     @property
     def is_auth_failure(self) -> bool:
