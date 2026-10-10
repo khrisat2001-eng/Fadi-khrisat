@@ -37,6 +37,7 @@ class TradeRequest:
     take_profit_price: Decimal | None
     risk_pct: Decimal | None = None
     source: str = "manual"  # manual | strategy
+    automatic: bool = False  # placed by the paper autopilot, not by a click
 
 
 @dataclass
@@ -274,7 +275,7 @@ class DecisionGate:
             id=str(uuid.uuid4()), status=status, summary=summary, checks=checks,
             qty=qty if status == "APPROVE" else None, est_entry_price=entry,
             inputs={
-                "symbol": req.symbol, "side": req.side, "source": req.source,
+                "symbol": req.symbol, "side": req.side, "source": req.source, "automatic": req.automatic,
                 "stop_price": str(req.stop_price), "take_profit_price": str(req.take_profit_price),
                 "risk_pct": str(req.risk_pct) if req.risk_pct is not None else None,
                 "bid": str(t.bid) if t else None, "ask": str(t.ask) if t else None,

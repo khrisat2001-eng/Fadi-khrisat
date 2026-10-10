@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Exchange Connections</title>
+  <title>Crypto Trader</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <h1>Exchange Connections</h1>
-    <span class="mode-badge paper">PAPER TRADING · live trading locked</span>
+    <h1>Crypto Trader</h1>
+    <span class="mode-badge paper">PRACTICE MONEY · real-money trading locked</span>
   </header>
 
   <main>
@@ -26,11 +26,18 @@
     </section>
 
     <section id="portal-view" hidden>
-      <div id="alerts"></div>
-      <div id="cards" class="cards"></div>
-      <div id="paper"></div>
-      <div id="news"></div>
-      <div id="risk"></div>
+      <nav class="tabs" id="tabs" aria-label="Sections">
+        <button data-tab="home">Home</button>
+        <button data-tab="trading">Trading details</button>
+        <button data-tab="news">News</button>
+        <button data-tab="exchanges">Exchanges</button>
+        <button data-tab="risk">Safety settings</button>
+      </nav>
+      <div data-pane="home"><div id="home"></div><div id="alerts"></div></div>
+      <div data-pane="trading" hidden><div id="paper"></div></div>
+      <div data-pane="news" hidden><div id="news"></div></div>
+      <div data-pane="exchanges" hidden><div id="cards" class="cards"></div></div>
+      <div data-pane="risk" hidden><div id="risk"></div></div>
     </section>
 
     <section id="wizard-view" hidden>
@@ -49,5 +56,6 @@
 
   <script src="/static/app.js"></script>
   <script src="/static/news.js"></script>
+  <script src="/static/home.js"></script>
 </body>
 </html>

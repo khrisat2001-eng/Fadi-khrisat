@@ -101,3 +101,32 @@ label.inline { display: flex; gap: 6px; align-items: center; }
 .news-used ul { padding-left: 18px; margin: 4px 0; }
 .news-used li.effect-pass { font-weight: normal; color: var(--text); }
 a { color: var(--accent); overflow-wrap: anywhere; }
+/* tabs and home */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); font-weight: 600; }
+.tabs button.current { color: var(--text); border-bottom-color: var(--accent); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; border-top: 4px solid var(--border); }
+.tile.paper { border-top-color: var(--paper); } .tile.ok { border-top-color: var(--ok); } .tile.bad { border-top-color: var(--bad); }
+.tile-label { font-size: 13px; color: var(--muted); }
+.tile-value { font-size: 22px; font-weight: 700; }
+.tile.ok .tile-value { color: var(--ok); } .tile.bad .tile-value { color: var(--bad); }
+.tile-sub { font-size: 13px; color: var(--muted); }
+.banner { padding: 12px 14px; border-radius: 10px; margin-bottom: 12px; font-weight: 600; }
+.banner.bad { background: var(--bad); color: #fff; }
+.switch { font-weight: 700; padding: 10px 16px; margin: 4px 0 8px; }
+.switch.on { background: var(--ok); border-color: var(--ok); color: #fff; }
+.ok { color: var(--ok); } .bad { color: var(--bad); }
+td.ok, td.warn, td.bad { font-weight: 600; }
+.nowrap { white-space: nowrap; }
+.steps li { margin: 6px 0; } .steps li span { margin-right: 8px; }
+.steps li.done span { color: var(--ok); text-decoration: line-through; }
+.feed { list-style: none; padding: 0; margin: 0; }
+.feed li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.feed-icon { width: 1.2em; text-align: center; font-weight: 700; }
+.feed-buy .feed-icon { color: var(--accent); } .feed-win .feed-icon { color: var(--ok); }
+.feed-loss .feed-icon { color: var(--bad); } .feed-blocked .feed-icon { color: var(--warn); }
+.pair-checks { list-style: none; padding: 0; margin: 0; }
+.pair-checks li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.pair-checks .why { font-size: 14px; }
+.chip { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }

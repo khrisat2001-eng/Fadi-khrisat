@@ -29,7 +29,9 @@ from app.news.classifier import Classifier
 from app.news.config import NewsConfig
 from app.news.service import NewsError, NewsService
 from app.news.sources import Fetcher, http_fetch
+from app.paper.autopilot import Autopilot
 from app.paper.engine import PaperTradingService
+from app.paper.home import home_view
 from app.paper.store import TradingStore
 from app.risk.config import RiskConfig
 from app.risk.gate import DecisionGate, TradeRequest
@@ -39,6 +41,7 @@ from app.security.vault import CredentialVault, KeyProvider, LocalKeyProvider
 
 log = logging.getLogger("app")
 STATIC_DIR = Path(__file__).parent / "static"
+AUTOPILOT_INTERVAL_SECONDS = 30
 SESSION_COOKIE = "portal_session"
 
 
@@ -107,6 +110,10 @@ class CalendarUpdateIn(BaseModel):
     scheduled_at: datetime | None = None
 
 
+class AutopilotIn(BaseModel):
+    on: bool
+
+
 class SuspensionIn(BaseModel):
     scope: str = Field(pattern="^(global|exchange|asset)$")
     target: str = Field(max_length=40)
@@ -124,6 +131,7 @@ def create_app(
     news_fetcher: Fetcher = http_fetch,
     news_classifier: Classifier | None = None,
     run_news_monitor: bool | None = None,
+    run_autopilot: bool | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     if not settings.access_token or len(settings.access_token) < 16:
@@ -143,8 +151,11 @@ def create_app(
     trading = TradingStore(store)
     news = NewsService(store, trading, market, news_classifier, news_fetcher)
     paper = PaperTradingService(service, trading, market, DecisionGate(), CandleService(candle_fetcher), news)
+    autopilot = Autopilot(paper)
     if run_news_monitor is None:
         run_news_monitor = run_health_monitor
+    if run_autopilot is None:
+        run_autopilot = run_health_monitor
     session_value = hmac.new(settings.access_token.encode(), b"portal-session-v1", hashlib.sha256).hexdigest()
 
     @asynccontextmanager
@@ -156,6 +167,8 @@ def create_app(
             tasks.append(asyncio.create_task(_health_loop(service, paper, settings.health_interval_seconds)))
         if run_news_monitor:
             tasks.append(asyncio.create_task(_news_loop(news)))
+        if run_autopilot:
+            tasks.append(asyncio.create_task(_autopilot_loop(autopilot)))
         yield
         for task in tasks:
             task.cancel()
@@ -166,6 +179,7 @@ def create_app(
     app = FastAPI(title="Exchange Connections Portal", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.paper = paper
+    app.state.autopilot = autopilot
     app.state.market = market
     app.state.news = news
 
@@ -363,6 +377,22 @@ def create_app(
     async def put_risk_config(body: RiskConfig):
         return paper.set_risk_config(body).as_json()
 
+    @app.get("/api/autopilot/{cid}", dependencies=auth)
+    async def get_autopilot(cid: str):
+        return autopilot.status(cid)
+
+    @app.put("/api/autopilot/{cid}", dependencies=auth)
+    async def put_autopilot(cid: str, body: AutopilotIn):
+        status = autopilot.set_on(cid, body.on)
+        if body.on:
+            await autopilot.run_once()  # first check right away, so the Home screen fills in
+            status = autopilot.status(cid)
+        return status
+
+    @app.get("/api/home", dependencies=auth)
+    async def home():
+        return home_view(paper, autopilot)
+
     @app.get("/api/risk/kill-switch", dependencies=auth)
     async def get_kill_switch():
         return {"on": paper.kill_switch()}
@@ -465,6 +495,15 @@ async def _health_loop(service: ConnectionService, paper: PaperTradingService, i
             await paper.sync_streams()
         except Exception as exc:  # keep monitoring no matter what
             log.error("Health check loop error: %s", type(exc).__name__)
+
+
+async def _autopilot_loop(autopilot: Autopilot) -> None:
+    while True:
+        await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
+        try:
+            await autopilot.run_once()
+        except Exception as exc:  # keep running no matter what
+            log.error("Autopilot loop error: %s", type(exc).__name__)
 
 
 async def _news_loop(news: NewsService) -> None:

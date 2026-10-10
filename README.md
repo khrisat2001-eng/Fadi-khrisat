@@ -42,7 +42,12 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 
 Data limitations: the source URLs above could not be reached from the build environment, so the parsers are tested against recorded-shape fixtures and need a check on a real deployment. There is no historical, timestamped news archive, so the news rules have not been backtested. Every item stores `available_at` so a point-in-time replay is possible once an archive or enough of our own history exists.
 
-Not built yet: automatic strategy execution (signals are acted on with one click) and backtesting. See the plan for the phases.
+**Home screen and paper Autopilot**:
+
+- The app opens on Home: mode (practice money, real money locked), Autopilot on or off, account value, total and today's profit or loss, and open trades. Below that, each paper account shows what Autopilot sees for every pair, the open trades with the prices they will sell at, and a plain-language activity feed with the reason for every buy, sale and blocked setup. Trading details, News, Exchanges and Safety settings each have their own tab.
+- Autopilot is a per-connection switch, off by default and paper-only. Every 30 seconds it checks the strategy signal for each selected pair. A buy setup on a new closed candle becomes a strategy order that goes through the same decision gate as a click, so news, the emergency stop, suspensions and every risk limit apply. It makes at most one attempt per pair per candle and skips pairs it already holds. Sales stay automatic at the stop-loss or take-profit. Autopilot never sells, widens a stop or touches real money.
+
+Not built yet: backtesting. See the plan for the phases.
 
 ## Run locally
 
