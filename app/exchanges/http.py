@@ -41,7 +41,10 @@ class SignedHttpConnector(ExchangeConnector):
     async def _server_time_ms(self) -> int: ...
 
     # --- shared request loop ------------------------------------------------
-    async def _request(self, method: str, path: str, *, group: str, signed: bool, body: dict | None = None) -> Any:
+    async def _request(self, method: str, path: str, *, group: str, signed: bool, body: dict | None = None,
+                       retry: bool = True) -> Any:
+        """retry=False for orders: a network error or timeout may mean the order went through, so it is never
+        resent. Clock and rate-limit rejections are safe to resend because the exchange refused the request."""
         body_text = json.dumps(body, separators=(",", ":")) if body else ""
         resynced = False
         for attempt in range(MAX_RETRIES + 1):
@@ -69,7 +72,8 @@ class SignedHttpConnector(ExchangeConnector):
                 await self._resync_clock()
                 resynced = True
                 continue
-            if err.kind in (ErrorKind.RATE_LIMITED, ErrorKind.EXCHANGE_UNAVAILABLE, ErrorKind.NETWORK) and attempt < MAX_RETRIES:
+            retryable = (ErrorKind.RATE_LIMITED, ErrorKind.EXCHANGE_UNAVAILABLE, ErrorKind.NETWORK) if retry else (ErrorKind.RATE_LIMITED,)
+            if err.kind in retryable and attempt < MAX_RETRIES:
                 await asyncio.sleep(self._backoff(attempt))
                 continue
             raise err

@@ -1,4 +1,4 @@
-"""KuCoin (spot REST API, key version 2) read-only connector.
+"""KuCoin (spot REST API, key version 2) connector: account reads and spot market orders.
 
 Signing: base64(HMAC-SHA256(secret, timestamp_ms + METHOD + endpoint + body)).
 For key version 2 the passphrase header is base64(HMAC-SHA256(secret, passphrase)).
@@ -21,6 +21,7 @@ from .base import (
     ErrorKind,
     ExchangeError,
     KeyInfo,
+    OrderResult,
     Permission,
     TradingPair,
     WizardGuide,
@@ -36,6 +37,7 @@ KUCOIN_ERRORS = {
     "400007": ErrorKind.PERMISSION_DENIED,
     "429000": ErrorKind.RATE_LIMITED,
 }
+NOT_FOUND = ("order not exist", "order_not_exist", "the order does not exist")
 
 
 def _map_permission(name: str) -> Permission:
@@ -54,7 +56,7 @@ def _map_permission(name: str) -> Permission:
 class KucoinConnector(SignedHttpConnector):
     exchange_id = "kucoin"
     base_url = "https://api.kucoin.com"
-    rate_limits = {"account": (6, 1.0), "public": (10, 1.0)}
+    rate_limits = {"account": (6, 1.0), "public": (10, 1.0), "trade": (6, 1.0)}
 
     @classmethod
     def guide(cls) -> WizardGuide:
@@ -79,7 +81,7 @@ class KucoinConnector(SignedHttpConnector):
             permissions_to_never_enable=["Withdrawal", "Transfer"],
             ip_restriction_note="Restricting the key to our server's IP address means a leaked key is useless anywhere else.",
             notes=[
-                "Spot trading permission is only needed later, if you decide to enable live trading after paper trading passes.",
+                "Spot trading permission is needed only for Real money on the Trade tab. You can add it later with Replace key.",
                 "Paper trading on KuCoin uses this app's own simulator with real KuCoin prices.",
             ],
         )
@@ -156,6 +158,7 @@ class KucoinConnector(SignedHttpConnector):
                 quote=s["quoteCurrency"],
                 min_size=s.get("baseMinSize"),
                 tick_size=s.get("priceIncrement"),
+                lot_size=s.get("baseIncrement"),
             )
             for s in data or []
             if s.get("enableTrading")
@@ -178,3 +181,47 @@ class KucoinConnector(SignedHttpConnector):
         )
         # KuCoin includes the candle still forming; keep closed candles only.
         return [c for c in candles if c.open_time_ms // 1000 + step <= end][-limit:]
+
+    # --- spot orders (Real mode) -------------------------------------------------------
+    # Accounts upgraded to KuCoin's "high-frequency" trading account must use the /hf/ order endpoints.
+    _hf: bool | None = None
+
+    async def _is_hf(self) -> bool:
+        if self._hf is None:
+            self._hf = bool(await self._request("GET", "/api/v1/hf/accounts/opened", group="account", signed=True))
+        return self._hf
+
+    async def place_market_order(self, symbol: str, side: str, qty: Decimal, client_id: str) -> str:
+        body = {"clientOid": client_id, "side": side, "symbol": symbol, "type": "market", "size": f"{qty:f}"}
+        path = "/api/v1/hf/orders" if await self._is_hf() else "/api/v1/orders"
+        data = await self._request("POST", path, group="trade", signed=True, body=body, retry=False)
+        return str(data["orderId"])
+
+    async def get_order(self, symbol: str, order_id: str | None = None, client_id: str | None = None) -> OrderResult | None:
+        if await self._is_hf():
+            path = f"/api/v1/hf/orders/{order_id}?symbol={symbol}" if order_id else \
+                f"/api/v1/hf/orders/client-order/{client_id}?symbol={symbol}"
+        else:
+            path = f"/api/v1/orders/{order_id}" if order_id else f"/api/v1/order/client-order/{client_id}"
+        try:
+            o = await self._request("GET", path, group="trade", signed=True)
+        except ExchangeError as exc:
+            if any(n in exc.detail.lower() for n in NOT_FOUND) or exc.exchange_code == "order_not_exist":
+                return None
+            raise
+        if not o:
+            return None
+        filled = Decimal(str(o.get("dealSize") or "0"))
+        funds = Decimal(str(o.get("dealFunds") or "0"))
+        avg = funds / filled if filled else None
+        fee = Decimal(str(o.get("fee") or "0"))
+        base, _, quote = symbol.partition("-")
+        if o.get("feeCurrency") == base:
+            if o.get("side") == "buy":
+                filled -= fee
+            fee_quote = fee * (avg or 0)
+        else:
+            fee_quote = fee if o.get("feeCurrency") == quote else Decimal(0)
+        active = o.get("isActive", o.get("active"))
+        status = "open" if active else "canceled" if o.get("cancelExist") else "filled"
+        return OrderResult(str(o.get("id") or order_id), o.get("clientOid") or client_id, status, filled, avg, fee_quote)
