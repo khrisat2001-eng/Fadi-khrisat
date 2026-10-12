@@ -71,6 +71,7 @@ function renderTrade(root) {
       acct ? h("div", { class: "t-stat" }, h("small", {}, "Profit/loss"),
         h("span", { class: updown(Number(acct.total_pnl)) }, signed(acct.total_pnl))) : null,
       autoSwitch()),
+    autoStatus(),
     h("div", { class: "t-grid" }, marketList(), chartPanel(), orderPanel()),
     bottomPanel()));
 }
@@ -88,6 +89,33 @@ function autoSwitch() {
     catch (e) { err.textContent = e.message; btn.disabled = false; }
   } }, h("span", { class: "dot" }), on ? "AUTO-TRADE ON" : "AUTO-TRADE OFF");
   return h("div", { class: "t-autobox" }, btn, err);
+}
+
+// One line under the top bar: is Auto-trade able to buy, when it last looked, and what it waits for.
+function autoStatus() {
+  const ap = trade.auto;
+  if (!ap) return null;
+  const style = h("div", { class: "t-style", role: "group", "aria-label": "Trading style" },
+    h("small", {}, "Style"),
+    ...[["careful", "Careful", "Fewer trades: only strong breakouts with high volume."],
+      ["active", "Active", "More trades: smaller breakouts and less volume are enough."]].map(([k, label, tip]) =>
+      h("button", { class: ap.style === k ? "sel" : "", title: tip, onclick: async () => {
+        if (ap.style === k) return;
+        try { await api("PUT", "/api/strategy/style", { style: k }); await loadTrade(false); } catch (e) { alert(e.message); }
+      } }, label)));
+  if (!ap.on) return h("div", { class: "t-autostatus" }, style, h("span", { class: "muted" }, "Auto-trade is off. Nothing is bought or sold automatically."));
+  const parts = [style];
+  for (const p of ap.problems || []) parts.push(h("div", { class: "banner bad" }, "Auto-trade can't buy right now: ", p));
+  const ms = trade.markets.markets;
+  const ready = ms.filter((m) => m.status === "BUY_SETUP" && !m.holding);
+  const closest = ms.filter((m) => !m.holding)[0];
+  const missing = closest ? closest.checks.filter((c) => !c.ok).map((c) => c.text.replace(/ \(.*\)$/, "")) : [];
+  parts.push(h("span", {},
+    ap.last_run_at ? `Last check ${timeOnly(ap.last_run_at)} (every 30 seconds) on closed ${ap.timeframe} candles. ` : "Waiting for the first check. ",
+    ready.length ? h("strong", { class: "up" }, `Buy setup now on ${ready.map((m) => base(m.symbol)).join(", ")}. `)
+      : closest ? `No buy setup yet. Closest: ${base(closest.symbol)} at ${closest.score}/100. ${missing.join(" ")} ` : "",
+    h("button", { class: "link", onclick: () => { trade.bottom = "auto"; renderTrade($("trade")); } }, "See the Auto-trade log")));
+  return h("div", { class: "t-autostatus" }, ...parts);
 }
 
 function marketList() {

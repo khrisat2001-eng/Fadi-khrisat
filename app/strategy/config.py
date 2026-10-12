@@ -17,6 +17,8 @@ class StrategyConfig(BaseModel):
     atr_period: int = Field(14, ge=2, le=50)
     stop_atr: float = Field(2.0, gt=0, le=10, description="Suggested stop = entry - this × ATR")
     target_atr: float = Field(6.0, gt=0, le=30, description="Suggested target = entry + this × ATR")
+    min_stop_pct: float = Field(0.6, ge=0, le=10, description="Stop is never closer than this % of price, so fees "
+                                "don't eat the edge; the target widens by the same ratio")
     max_breakout_extension_atr: float = Field(1.0, gt=0, le=10, description="Too far above the breakout level")
     max_ema_extension_atr: float = Field(2.5, gt=0, le=20, description="Too far above the fast EMA")
     exit_on_trend_break: bool = Field(True, description="Autopilot sells when a candle closes below the fast EMA")
@@ -34,3 +36,19 @@ class StrategyConfig(BaseModel):
     @property
     def candles_needed(self) -> int:
         return max(self.ema_slow, self.breakout_lookback, self.rsi_period, self.atr_period) + 30
+
+
+# Trading styles shown as one switch on the Trade screen. Each is a set of strategy settings;
+# anything else the user changed under Advanced is kept.
+STYLES: dict[str, dict] = {
+    "careful": {"breakout_lookback": 20, "volume_multiple": 1.5, "rsi_min": 50, "rsi_max": 75,
+                "max_breakout_extension_atr": 1.0, "max_ema_extension_atr": 2.5},
+    "active": {"breakout_lookback": 10, "volume_multiple": 1.1, "rsi_min": 45, "rsi_max": 78,
+               "max_breakout_extension_atr": 1.5, "max_ema_extension_atr": 3.0},
+}
+
+
+def style_of(cfg: StrategyConfig) -> str:
+    """'careful', 'active', or 'custom' when the settings match neither."""
+    d = cfg.model_dump()
+    return next((name for name, vals in STYLES.items() if all(d[k] == v for k, v in vals.items())), "custom")

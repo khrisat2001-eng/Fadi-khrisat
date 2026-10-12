@@ -126,3 +126,52 @@ def test_markets_are_ranked_and_chart_has_overlays(client, paper, candle_feed): 
     client.put(f"/api/autopilot/{paper}", json={"on": True})
     c = client.get(f"/api/chart/{paper}/BTC-USDT").json()
     assert c["position"]["stop"] < c["position"]["entry"] and c["markers"][0]["side"] == "buy"
+
+
+def test_trading_style_switch(client, paper, candle_feed):  # noqa: F811
+    setup(client, paper, candle_feed)
+    assert client.get(f"/api/autopilot/{paper}").json()["style"] == "careful"
+    r = client.put("/api/strategy/style", json={"style": "active"}).json()
+    assert r["style"] == "active" and r["config"]["volume_multiple"] == 1.1
+    assert client.get(f"/api/autopilot/{paper}").json()["style"] == "active"
+    cfg = client.get("/api/strategy/config").json()
+    client.put("/api/strategy/config", json={**cfg, "rsi_min": 40})
+    assert client.get(f"/api/autopilot/{paper}").json()["style"] == "custom"
+    assert client.put("/api/strategy/style", json={"style": "yolo"}).status_code == 422
+
+
+def test_stop_is_never_too_tight_for_fees():
+    from app.strategy.breakout import evaluate
+    from app.strategy.config import StrategyConfig
+    from .candles import make_candles
+    sig = evaluate("BTC-USDT", make_candles("breakout"), StrategyConfig(min_stop_pct=5))
+    price = sig.metrics["price"]
+    assert abs((price - sig.suggested_stop) / price - 0.05) < 1e-6
+    assert abs((sig.suggested_target - price) - 3 * (price - sig.suggested_stop)) < 1e-4  # same 6:2 shape
+
+
+def test_problems_explain_why_nothing_is_bought(client, paper, candle_feed):  # noqa: F811
+    setup(client, paper, candle_feed)
+    client.post("/api/risk/kill-switch", json={"on": True, "reason": "test"})
+    status = client.put(f"/api/autopilot/{paper}", json={"on": True}).json()
+    assert any("Emergency stop" in p for p in status["problems"])
+
+
+def test_a_waiting_setup_is_retried_on_the_same_candle(client, paper, candle_feed):  # noqa: F811
+    setup(client, paper, candle_feed)
+    ap = client.app_ref.state.autopilot
+    real = ap.paper.place_order
+    calls = []
+
+    async def wait_once(req):
+        calls.append(req.symbol)
+        if len(calls) <= 2:
+            return {"decision": {"status": "WAIT", "summary": "Market data is current: price is 11s old."}, "fill": None}
+        return await real(req)
+
+    ap.paper.place_order = wait_once
+    status = client.put(f"/api/autopilot/{paper}", json={"on": True}).json()
+    assert {p["state"] for p in status["pairs"]} == {"error"}
+    assert "Will try again" in status["pairs"][0]["text"]
+    run(client)
+    assert {p["state"] for p in client.get(f"/api/autopilot/{paper}").json()["pairs"]} == {"bought"}

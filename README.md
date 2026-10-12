@@ -51,6 +51,14 @@ Data limitations: the source URLs above could not be reached from the build envi
 
 Not built yet: backtesting. See the plan for the phases.
 
+
+**Why isn't Auto-trade buying?** The line under the top bar says. It shows the last check, the pair closest to a buy
+setup and what it is still missing. A red banner appears when something stops every buy: the emergency stop, an
+unhealthy exchange connection, or live prices not coming in (OKX and KuCoin refuse servers in a US region).
+**Style** picks how picky the strategy is: *Careful* waits for strong breakouts on high volume (few trades),
+*Active* accepts smaller breakouts and less volume (more trades). Stops are never closer than 0.6% of the price, so
+fees don't eat the reward and the safety checks don't block every setup in calm markets.
+
 ## Run locally
 
 ```bash

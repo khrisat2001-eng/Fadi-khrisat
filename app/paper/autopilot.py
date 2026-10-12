@@ -18,6 +18,7 @@ from typing import Any
 from app.connections.service import PortalError
 from app.connections.store import now_iso
 from app.risk.gate import TradeRequest
+from app.strategy.config import style_of
 
 from .engine import PaperTradingService
 from .home import fmt_num
@@ -59,8 +60,38 @@ class Autopilot:
 
     def status(self, connection_id: str) -> dict[str, Any]:
         st = self._state().get(connection_id) or {}
-        return {"on": bool(st.get("on")), "since": st.get("since"), "last_run_at": self.last_run_at,
+        on = bool(st.get("on"))
+        return {"on": on, "since": st.get("since"), "last_run_at": self.last_run_at,
+                "style": style_of(self.paper.strategy_config()), "timeframe": self.paper.strategy_config().timeframe,
+                "problems": self.problems(connection_id) if on else [],
                 "pairs": list((self.last_checks.get(connection_id) or {}).values())}
+
+    def problems(self, connection_id: str) -> list[str]:
+        """Things that stop Auto-trade from buying at all, in plain words."""
+        conn = self.paper.store.get_connection(connection_id)
+        if conn is None:
+            return ["This exchange connection no longer exists."]
+        out = []
+        ex = conn["exchange"].upper()
+        if self.paper.kill_switch():
+            out.append("Emergency stop is on, so nothing new is bought. Turn it off under Safety settings.")
+        if conn["state"] != "PAPER":
+            out.append(f"{ex} is not in paper-trading mode, so Auto-trade is not checking it.")
+        if self.paper.trading.get_account(connection_id) is None:
+            out.append("There is no practice account yet. Create one on the Trade tab.")
+        if conn["health"] != "ok":
+            out.append(f"The {ex} connection is not healthy ({conn['health']}). Check it on the Exchanges tab. "
+                       "If the server runs in a US region, OKX and KuCoin refuse it: move the Railway region to EU West.")
+        stream = self.paper.market.stream_state(conn["exchange"])
+        if stream != "connected":
+            out.append(f"Live prices from {ex} are not coming in (state: {stream}), and every buy needs a fresh price. "
+                       "If the server runs in a US region, move the Railway region to EU West.")
+        if self.last_run_at is None:
+            out.append("Auto-trade checks have not run on this server yet.")
+        elif (datetime.now(timezone.utc) - datetime.fromisoformat(self.last_run_at)).total_seconds() > 180:
+            out.append(f"Auto-trade checks stopped running (last one at {self.last_run_at[:16].replace('T', ' ')} UTC). "
+                       "Restart the app on Railway.")
+        return out
 
     def set_on(self, connection_id: str, on: bool) -> dict[str, Any]:
         conn = self.paper._paper_connection(connection_id)
@@ -124,10 +155,15 @@ class Autopilot:
             if done.get(symbol) == sig.get("candle_time_ms"):
                 checks[symbol] = self._check(symbol, "waiting", "Already acted on this candle. Waiting for the next one.")
                 continue
-            self._mark_done(cid, symbol, sig.get("candle_time_ms"))
             result = await self._enter(conn, symbol)
             attempted.append(result)
             d = result["decision"]
+            if d["status"] == "WAIT":
+                # Something passing (a late price tick, a news delay): try again on the next run, same candle.
+                checks[symbol] = self._check(symbol, "error", f"Buy setup found, but it has to wait: {d['summary']} "
+                                             "Will try again in 30 seconds.")
+                continue
+            self._mark_done(cid, symbol, sig.get("candle_time_ms"))
             if result.get("fill"):
                 f = result["fill"]
                 checks[symbol] = self._check(symbol, "bought", f"Bought {fmt_num(f['qty'])} at {fmt_num(f['price'])}. It sells automatically below "
@@ -157,7 +193,9 @@ class Autopilot:
                 return self._check(symbol, "sold", "Sold because the trend weakened: " + why)
             return self._check(symbol, "holding", "Wants to sell (trend weakened) but has no fresh price yet. Will retry.")
         if cfg.trailing_stop and m.get("atr"):
-            new_stop = Decimal(str(m["close"])) - Decimal(str(cfg.stop_atr)) * Decimal(str(m["atr"]))
+            close = Decimal(str(m["close"]))
+            dist = max(Decimal(str(cfg.stop_atr)) * Decimal(str(m["atr"])), close * Decimal(str(cfg.min_stop_pct)) / 100)
+            new_stop = close - dist
             new_stop = new_stop.quantize(Decimal("1e-8"))
             if new_stop > pos["stop_price"]:
                 try:
@@ -183,7 +221,7 @@ class Autopilot:
             self.paper.store.add_alert(conn["id"], "info",
                                        f"Autopilot bought {fmt_num(f['qty'])} {symbol} on {ex} (paper) at {fmt_num(f['price'])}. "
                                        f"Stop {fmt_num(req.stop_price)}, target {fmt_num(req.take_profit_price)}.")
-        else:
+        elif result["decision"]["status"] != "WAIT":
             self.paper.store.add_alert(conn["id"], "info",
                                        f"Autopilot saw a buy setup on {ex} {symbol} but did not trade: {result['decision']['summary']}")
         return result
