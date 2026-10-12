@@ -36,7 +36,7 @@ from app.paper.home import home_view
 from app.paper.store import TradingStore
 from app.risk.config import RiskConfig
 from app.risk.gate import DecisionGate, TradeRequest
-from app.strategy.config import StrategyConfig
+from app.strategy.config import STYLES, StrategyConfig, style_of
 from app.strategy.service import CandleFetcher, CandleService, fetch_public_candles
 from app.security.vault import CredentialVault, KeyProvider, LocalKeyProvider
 
@@ -109,6 +109,10 @@ class CalendarUpdateIn(BaseModel):
     status: str | None = Field(None, pattern="^(scheduled|confirmed|changed|completed|cancelled)$")
     time_verified: bool | None = None
     scheduled_at: datetime | None = None
+
+
+class StyleIn(BaseModel):
+    style: str = Field(pattern="^(careful|active)$")
 
 
 class AutopilotIn(BaseModel):
@@ -365,6 +369,11 @@ def create_app(
     @app.put("/api/strategy/config", dependencies=auth)
     async def put_strategy_config(body: StrategyConfig):
         return paper.set_strategy_config(body).model_dump()
+
+    @app.put("/api/strategy/style", dependencies=auth)
+    async def put_strategy_style(body: StyleIn):
+        cfg = paper.set_strategy_config(paper.strategy_config().model_copy(update=STYLES[body.style]))
+        return {"style": style_of(cfg), "config": cfg.model_dump()}
 
     @app.get("/api/decisions", dependencies=auth)
     async def decisions(connection_id: str | None = None):

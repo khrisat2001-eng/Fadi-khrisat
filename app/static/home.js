@@ -115,6 +115,7 @@ function accountPanel(a) {
     h("p", { class: "note" }, `Watching ${a.pairs.join(", ") || "no pairs"} on ${a.pairs.length ? "closed candles" : "-"}.` +
       (ap.on && ap.last_run_at ? ` Last check ${timeOnly(ap.last_run_at)}; checks run every 30 seconds.` : "")),
     toggle, err,
+    ...(ap.problems || []).map((x) => h("div", { class: "banner bad" }, "Autopilot can't buy right now: ", x)),
     h("h3", {}, "What Autopilot sees now"), pairs,
     h("h3", {}, "Open trades"), positions);
 }

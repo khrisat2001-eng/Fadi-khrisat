@@ -108,6 +108,10 @@ def evaluate(symbol: str, candles: list[Candle], cfg: StrategyConfig, live_price
     score = 20 * sum((trend_up, breakout, vol_ok, rsi_ok)) + (0 if extended else 20)
     reasons += ["✗ Over-extended: " + r for r in ext_reasons] or ["✓ Not over-extended"]
 
+    # In calm markets 2 ATR can be so tight that fees and slippage eat most of the reward,
+    # so the stop has a floor and the target keeps the same reward:risk shape.
+    stop_dist = max(cfg.stop_atr * atr_now, price * cfg.min_stop_pct / 100) if atr_now else None
+
     return Signal(
         symbol=symbol,
         timeframe=cfg.timeframe,
@@ -121,8 +125,8 @@ def evaluate(symbol: str, candles: list[Candle], cfg: StrategyConfig, live_price
             "volume_ratio": _r(vol_ratio, 2), "above_breakout_atr": _r(above_breakout_atr, 2),
             "above_ema_atr": _r(above_ema_atr, 2), "trend_up": trend_up, "breakout": breakout,
         },
-        suggested_stop=_r(price - cfg.stop_atr * atr_now) if atr_now else None,
-        suggested_target=_r(price + cfg.target_atr * atr_now) if atr_now else None,
+        suggested_stop=_r(price - stop_dist) if stop_dist else None,
+        suggested_target=_r(price + stop_dist * cfg.target_atr / cfg.stop_atr) if stop_dist else None,
         candle_time_ms=last.open_time_ms,
         score=score,
     )
