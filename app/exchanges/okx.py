@@ -1,4 +1,4 @@
-"""OKX (API v5) read-only connector.
+"""OKX (API v5) connector: account reads and spot market orders.
 
 Signing: base64(HMAC-SHA256(secret, timestamp + METHOD + requestPath + body)),
 timestamp in ISO 8601 UTC with milliseconds.
@@ -21,6 +21,7 @@ from .base import (
     ErrorKind,
     ExchangeError,
     KeyInfo,
+    OrderResult,
     Permission,
     TradingPair,
     WizardGuide,
@@ -53,7 +54,7 @@ OKX_PERMS = {
 class OkxConnector(SignedHttpConnector):
     exchange_id = "okx"
     base_url = "https://www.okx.com"
-    rate_limits = {"account": (4, 2.0), "public": (10, 2.0)}
+    rate_limits = {"account": (4, 2.0), "public": (10, 2.0), "trade": (10, 2.0)}
 
     @classmethod
     def guide(cls) -> WizardGuide:
@@ -83,7 +84,7 @@ class OkxConnector(SignedHttpConnector):
                 "deleted automatically after a period of inactivity."
             ),
             notes=[
-                "Trade permission is only needed later, if you decide to enable live trading after paper trading passes.",
+                "Trade permission is needed only for Real money on the Trade tab. You can add it later with Replace key.",
                 "OKX is not available in every country. Check OKX's own eligibility rules for where you live.",
             ],
         )
@@ -115,6 +116,11 @@ class OkxConnector(SignedHttpConnector):
             return payload.get("data", [])
         if status == 429:
             raise ExchangeError(ErrorKind.RATE_LIMITED, code)
+        rows = payload.get("data")
+        if code in ("1", "2") and isinstance(rows, list) and rows and isinstance(rows[0], dict) and rows[0].get("sCode"):
+            # Order calls report the real reason per order: e.g. 51008 = not enough balance.
+            code, msg = str(rows[0]["sCode"]), str(rows[0].get("sMsg", ""))
+            raise ExchangeError(OKX_ERRORS.get(code, ErrorKind.UNEXPECTED), code, msg[:200])
         kind = OKX_ERRORS.get(code)
         if kind is None:
             kind = ErrorKind.EXCHANGE_UNAVAILABLE if status >= 500 else ErrorKind.UNEXPECTED
@@ -149,7 +155,8 @@ class OkxConnector(SignedHttpConnector):
     async def get_trading_pairs(self) -> list[TradingPair]:
         data = await self._request("GET", "/api/v5/public/instruments?instType=SPOT", group="public", signed=False)
         return [
-            TradingPair(symbol=i["instId"], base=i["baseCcy"], quote=i["quoteCcy"], min_size=i.get("minSz"), tick_size=i.get("tickSz"))
+            TradingPair(symbol=i["instId"], base=i["baseCcy"], quote=i["quoteCcy"], min_size=i.get("minSz"), tick_size=i.get("tickSz"),
+                        lot_size=i.get("lotSz"))
             for i in data
             if i.get("state") == "live"
         ]
@@ -167,3 +174,37 @@ class OkxConnector(SignedHttpConnector):
             (Candle(int(r[0]), Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]), Decimal(r[5])) for r in rows),
             key=lambda c: c.open_time_ms,
         )
+
+    # --- spot orders (Real mode) -------------------------------------------------------
+    async def place_market_order(self, symbol: str, side: str, qty: Decimal, client_id: str) -> str:
+        body = {"instId": symbol, "tdMode": "cash", "side": side, "ordType": "market", "sz": f"{qty:f}", "clOrdId": client_id}
+        if side == "buy":
+            body["tgtCcy"] = "base_ccy"  # sz is in BTC, not USDT
+        data = await self._request("POST", "/api/v5/trade/order", group="trade", signed=True, body=body, retry=False)
+        return str(data[0]["ordId"])
+
+    async def get_order(self, symbol: str, order_id: str | None = None, client_id: str | None = None) -> OrderResult | None:
+        ref = f"ordId={order_id}" if order_id else f"clOrdId={client_id}"
+        try:
+            data = await self._request("GET", f"/api/v5/trade/order?instId={symbol}&{ref}", group="trade", signed=True)
+        except ExchangeError as exc:
+            if exc.exchange_code == "51603":  # order does not exist
+                return None
+            raise
+        if not data:
+            return None
+        o = data[0]
+        filled = Decimal(o.get("accFillSz") or "0")
+        avg = Decimal(o["avgPx"]) if o.get("avgPx") else None
+        fee = -Decimal(o.get("fee") or "0")  # OKX reports fees charged as negative numbers
+        base, _, quote = symbol.partition("-")
+        fee_ccy = o.get("feeCcy")
+        if fee_ccy == base:
+            if o.get("side") == "buy":
+                filled -= fee  # the fee was taken out of the coins bought
+            fee_quote = fee * (avg or 0)
+        else:
+            fee_quote = fee if fee_ccy == quote else Decimal(0)
+        state = o.get("state")
+        status = "filled" if state == "filled" else "canceled" if state in ("canceled", "mmp_canceled") else "open"
+        return OrderResult(str(o["ordId"]), o.get("clOrdId") or None, status, filled, avg, fee_quote)

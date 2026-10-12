@@ -281,9 +281,10 @@ function renderWizard() {
         } }, "Enable paper trading"));
       break;
     case 10:
-      body.replaceChildren(h("h2", {}, "Live trading is locked"),
-        h("p", {}, "Live automated trading stays off. It can be unlocked only after all of these pass, and only with your explicit authorization:"),
-        h("ul", {}, ["Exchange connections", "Technical strategy engine", "News monitoring", "Risk controls", "Paper trading results"].map((x) => h("li", {}, x))),
+      body.replaceChildren(h("h2", {}, "Practice first, real money when you choose"),
+        h("p", {}, "You're set up with practice money. Real-money trading stays locked until you unlock it yourself: " +
+          "on the Trade tab, pick Real money, set your limits and type the confirmation. It also needs LIVE_TRADING=on on the server " +
+          "and a key with trading permission (never withdrawal)."),
         h("button", { onclick: () => loadPortal() }, "Finish"));
       break;
   }

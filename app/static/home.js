@@ -30,11 +30,21 @@ function tile(label, value, sub, cls = "") {
     sub ? h("div", { class: "tile-sub" }, sub) : null);
 }
 
+// The red badge in the top bar is always visible while real money is unlocked anywhere.
+function setModeBadge(realExchanges) {
+  const badge = document.querySelector(".topbar .mode-badge");
+  if (!badge) return;
+  badge.className = `mode-badge ${realExchanges.length ? "real" : "paper"}`;
+  badge.textContent = realExchanges.length ? `REAL MONEY ON · ${realExchanges.map(exName).join(", ")}` : "PRACTICE MONEY · real-money trading locked";
+}
+
 // --- home ---------------------------------------------------------------------------
 async function renderHome() {
   const root = $("home");
   let data;
   try { data = await api("GET", "/api/home"); } catch (e) { root.replaceChildren(h("p", { class: "error" }, e.message)); return; }
+  const realOn = data.real_money_exchanges || [];
+  setModeBadge(realOn);
   const accts = data.accounts.filter((a) => a.account);
   const equity = accts.reduce((n, a) => n + Number(a.account.equity), 0);
   const start = accts.reduce((n, a) => n + Number(a.account.starting_balance), 0);
@@ -48,7 +58,8 @@ async function renderHome() {
       "Open trades still sell at their stop-loss or take-profit. Turn it off under Safety settings."));
   }
   parts.push(h("div", { class: "tiles" },
-    tile("Mode", "Practice money", "Real-money trading is locked", "paper"),
+    realOn.length ? tile("Real money", "ON", `Unlocked on ${realOn.map(exName).join(", ")}. Real trades are on the Trade tab under Real money.`, "bad")
+      : tile("Mode", "Practice money", "Real-money trading is locked", "paper"),
     tile("Autopilot", autoOn ? "ON" : "OFF", autoOn ? "Buys on its own when a setup passes the safety checks" : "Nothing is bought automatically",
       autoOn ? "ok" : ""),
     tile("Account value", accts.length ? `${money(equity)} USDT` : "-", accts.length ? `Started with ${money(start)}` : null),

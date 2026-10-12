@@ -3,8 +3,9 @@
 Adding a new exchange means writing one subclass of ExchangeConnector and
 registering it in registry.py. Nothing else in the platform needs to change.
 
-Connectors in this module are read-only. There are deliberately no methods for
-placing orders, transferring funds or withdrawing.
+Connectors can read, and place spot market orders for Real mode. Orders are only
+ever sent by app/live/engine.py after the decision gate approves them. There are
+deliberately no methods for transferring funds or withdrawing.
 """
 from __future__ import annotations
 
@@ -115,6 +116,7 @@ class TradingPair:
     quote: str
     min_size: str | None = None
     tick_size: str | None = None
+    lot_size: str | None = None  # order size step in base currency
 
 
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
@@ -129,6 +131,18 @@ class Candle:
     low: Decimal
     close: Decimal
     volume: Decimal
+
+
+@dataclass
+class OrderResult:
+    """One spot order as the exchange reports it. Quantities are in base currency."""
+
+    order_id: str
+    client_id: str | None
+    status: str  # filled | open | canceled
+    filled_qty: Decimal  # base actually received (buy) or given up (sell), after any fee taken in base
+    avg_price: Decimal | None
+    fee_quote: Decimal  # fee converted to the quote currency
 
 
 @dataclass
@@ -173,6 +187,15 @@ class ExchangeConnector(ABC):
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
         """Closed candles only, oldest first. Public endpoint."""
+        raise NotImplementedError
+
+    async def place_market_order(self, symbol: str, side: str, qty: Decimal, client_id: str) -> str:
+        """Spot market order for `qty` base units. Returns the exchange order id. Never retried blindly:
+        if the outcome is unknown, look it up with get_order(client_id=...)."""
+        raise NotImplementedError
+
+    async def get_order(self, symbol: str, order_id: str | None = None, client_id: str | None = None) -> OrderResult | None:
+        """None when the exchange has no such order."""
         raise NotImplementedError
 
     @abstractmethod

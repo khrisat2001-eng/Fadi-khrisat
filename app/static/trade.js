@@ -4,7 +4,11 @@
 "use strict";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const trade = { cid: null, conns: [], symbol: null, side: "buy", markets: null, chart: null, account: null, timer: null, result: null };
+const trade = { cid: null, conns: [], symbol: null, side: "buy", markets: null, chart: null, account: null, timer: null, result: null,
+  mode: (() => { try { return localStorage.getItem("tradeMode") === "real" ? "real" : "paper"; } catch (_) { return "paper"; } })() };
+const isReal = () => trade.mode === "real";
+const moneyPath = () => (isReal() ? `/api/live/${trade.cid}` : `/api/paper/${trade.cid}`);
+const moneyWord = () => (isReal() ? "real" : "practice");
 
 function s(tag, attrs = {}, ...children) {
   const el = document.createElementNS(SVG_NS, tag);
@@ -25,14 +29,16 @@ async function loadTrade(full = true) {
   try {
     if (full || !trade.conns.length) {
       trade.conns = (await api("GET", "/api/connections")).filter((c) => c.state === "PAPER");
+      setModeBadge(trade.conns.filter((c) => c.live_trading).map((c) => c.exchange));
       if (!trade.conns.find((c) => c.id === trade.cid)) trade.cid = trade.conns.length ? trade.conns[0].id : null;
     }
     if (!trade.cid) { renderTradeEmpty(root); return; }
-    const [markets, account, auto] = await Promise.all([
-      api("GET", `/api/markets/${trade.cid}`), api("GET", `/api/paper/${trade.cid}`), api("GET", `/api/autopilot/${trade.cid}`)]);
-    trade.markets = markets; trade.account = account; trade.auto = auto;
+    const q = `?mode=${trade.mode}`;
+    const [markets, account] = await Promise.all([api("GET", `/api/markets/${trade.cid}${q}`), api("GET", moneyPath())]);
+    trade.markets = markets; trade.account = account;
+    trade.auto = isReal() ? account.autotrade : await api("GET", `/api/autopilot/${trade.cid}`);
     if (!markets.markets.find((m) => m.symbol === trade.symbol)) trade.symbol = markets.best || (markets.markets[0] || {}).symbol || null;
-    trade.chart = trade.symbol ? await api("GET", `/api/chart/${trade.cid}/${encodeURIComponent(trade.symbol)}`) : null;
+    trade.chart = trade.symbol ? await api("GET", `/api/chart/${trade.cid}/${encodeURIComponent(trade.symbol)}${q}`) : null;
     renderTrade(root);
   } catch (e) { root.replaceChildren(h("p", { class: "error" }, e.message)); }
 }
@@ -58,7 +64,10 @@ function renderTrade(root) {
   const m = trade.markets.markets.find((x) => x.symbol === trade.symbol) || {};
   const acct = trade.account.account;
   const conn = trade.conns.find((c) => c.id === trade.cid);
-  root.replaceChildren(h("div", { class: "trade" },
+  const real = isReal();
+  const live = real ? trade.account : null;
+  root.replaceChildren(h("div", { class: `trade ${real ? "real" : ""}` },
+    modeSwitch(),
     h("div", { class: "t-bar" },
       trade.conns.length > 1
         ? h("select", { onchange: (e) => { trade.cid = e.target.value; trade.symbol = null; loadTrade(); } },
@@ -67,7 +76,9 @@ function renderTrade(root) {
       h("div", { class: "t-pair" }, h("strong", {}, trade.symbol || "-"),
         h("span", { class: `t-price ${updown(m.change_24h_pct)}` }, fmtP(m.last)),
         h("span", { class: `t-chg ${updown(m.change_24h_pct)}` }, `24h ${pct(m.change_24h_pct)}`)),
-      acct ? h("div", { class: "t-stat" }, h("small", {}, "Practice balance"), h("span", {}, `${money(acct.equity)} USDT`)) : null,
+      acct ? h("div", { class: "t-stat" }, h("small", {}, real ? "Real budget value" : "Practice balance"), h("span", {}, `${money(acct.equity)} USDT`)) : null,
+      real && live.real_usdt_available != null ? h("div", { class: "t-stat" }, h("small", {}, `USDT on ${exName(conn.exchange)}`),
+        h("span", {}, money(live.real_usdt_available))) : null,
       acct ? h("div", { class: "t-stat" }, h("small", {}, "Profit/loss"),
         h("span", { class: updown(Number(acct.total_pnl)) }, signed(acct.total_pnl))) : null,
       autoSwitch()),
@@ -76,18 +87,33 @@ function renderTrade(root) {
     bottomPanel()));
 }
 
+// Practice or Real: two separate accounts, two separate Auto-trade switches.
+function modeSwitch() {
+  const pick = (m) => { if (trade.mode === m) return; trade.mode = m; trade.side = "buy"; trade.result = null;
+    try { localStorage.setItem("tradeMode", m); } catch (_) { /* storage may be blocked */ } loadTrade(false); };
+  return h("div", { class: "t-mode", role: "group", "aria-label": "Money" },
+    h("button", { class: trade.mode === "paper" ? "sel" : "", onclick: () => pick("paper") }, "Practice money"),
+    h("button", { class: `real ${trade.mode === "real" ? "sel" : ""}`, onclick: () => pick("real") }, "Real money"),
+    isReal() ? h("span", { class: "t-mode-note" }, trade.account.unlocked
+      ? `REAL ORDERS on your exchange. Limits: ${money(trade.account.per_trade)} USDT per trade, ${money(trade.account.budget)} USDT in total.`
+      : "Real-money trading is locked for this exchange. Unlock it on the right.") : null);
+}
+
 function autoSwitch() {
   const on = trade.auto && trade.auto.on;
+  if (isReal() && !trade.account.unlocked && !on) return null;
   const err = h("span", { class: "error" });
   const btn = h("button", { class: `t-auto ${on ? "on" : ""}`, title: "Automatic buying and selling with practice money", onclick: async () => {
-    if (!on && !confirm("Turn on AUTO-TRADE?\n\nThe app will study the charts of your pairs every 30 seconds and:\n" +
+    if (!on && !confirm(`Turn on AUTO-TRADE with ${isReal() ? "REAL MONEY" : "practice money"}?\n\nThe app will study the charts of your pairs every 30 seconds and:\n` +
       "• BUY when the strategy finds a setup and every safety check passes\n" +
       "• SELL at the stop-loss, at the take-profit, or when the trend weakens\n" +
-      "• raise the stop-loss as the price rises\n\nPractice money only. Real money is never used.")) return;
+      "• raise the stop-loss as the price rises\n\n" + (isReal()
+        ? `It places REAL orders on your exchange, at most ${trade.account.per_trade} USDT per trade and ${trade.account.budget} USDT in total. You can lose this money.`
+        : "Practice money only. Real money is never used."))) return;
     btn.disabled = true;
-    try { await api("PUT", `/api/autopilot/${trade.cid}`, { on: !on }); await loadTrade(false); }
+    try { await api("PUT", isReal() ? `/api/live/${trade.cid}/autotrade` : `/api/autopilot/${trade.cid}`, { on: !on }); await loadTrade(false); }
     catch (e) { err.textContent = e.message; btn.disabled = false; }
-  } }, h("span", { class: "dot" }), on ? "AUTO-TRADE ON" : "AUTO-TRADE OFF");
+  } }, h("span", { class: "dot" }), `${isReal() ? "REAL " : ""}AUTO-TRADE ${on ? "ON" : "OFF"}`);
   return h("div", { class: "t-autobox" }, btn, err);
 }
 
@@ -225,7 +251,9 @@ function orderPanel() {
     h("button", { class: trade.side === "buy" ? "buy sel" : "", onclick: () => { trade.side = "buy"; trade.result = null; trade.editing = false; renderTrade($("trade")); } }, "Buy"),
     h("button", { class: trade.side === "sell" ? "sell sel" : "", onclick: () => { trade.side = "sell"; trade.result = null; trade.editing = false; renderTrade($("trade")); } }, "Sell"));
   panel.append(tabs);
+  if (isReal() && !trade.account.unlocked && (trade.side === "buy" || !trade.account.account)) { panel.append(unlockForm()); return panel; }
   if (!trade.account.account) { panel.append(createAccountForm()); return panel; }
+  if (isReal()) panel.append(limitsLine());
   panel.append(trade.side === "buy" ? buyForm(sig) : sellForm(pos));
   if (trade.result) panel.append(trade.result);
   if (sig) panel.append(studyBox(sig));
@@ -242,6 +270,41 @@ function createAccountForm() {
       try { await api("POST", `/api/paper/${trade.cid}/account`, { starting_balance: bal.value }); await loadTrade(); }
       catch (e) { err.textContent = e.message; }
     } }, "Create practice account"), err);
+}
+
+function unlockForm() {
+  const L = trade.account;
+  const err = h("p", { class: "error" });
+  const perTrade = h("input", { type: "number", min: "5", step: "any", value: L.per_trade, oninput: () => { trade.editing = true; } });
+  const budget = h("input", { type: "number", min: "5", step: "any", value: L.budget, oninput: () => { trade.editing = true; } });
+  const phrase = h("input", { type: "text", placeholder: L.confirm_phrase, autocomplete: "off", oninput: () => { trade.editing = true; } });
+  const ready = L.requirements.every((r) => r.ok);
+  const btn = h("button", { class: "danger wide", disabled: ready ? null : "", onclick: async () => {
+    btn.disabled = true;
+    try {
+      await api("PUT", `/api/live/${trade.cid}/limits`, { per_trade: perTrade.value, budget: budget.value });
+      await api("POST", `/api/live/${trade.cid}/unlock`, { confirm: phrase.value });
+      trade.editing = false; await loadTrade(true);
+    } catch (e) { err.textContent = e.message; btn.disabled = false; }
+  } }, "Unlock real-money trading");
+  return h("div", { class: "t-unlock" },
+    h("p", {}, h("strong", {}, "Real money: "), "buys and sells are sent to your exchange as real orders. You can lose the money you put in."),
+    h("ul", { class: "t-req" }, L.requirements.map((r) => h("li", { class: r.ok ? "up" : "down" }, h("b", {}, r.ok ? "✓ " : "✗ "), r.text))),
+    h("label", { class: "t-field" }, h("span", {}, "Most per trade (USDT)"), perTrade),
+    h("label", { class: "t-field" }, h("span", {}, "Most in total (USDT)"), budget,
+      h("small", {}, "The app never uses more than this. Each trade also follows your Safety settings.")),
+    h("label", { class: "t-field" }, h("span", {}, `Type ${L.confirm_phrase} to confirm`), phrase),
+    btn, err);
+}
+
+function limitsLine() {
+  const L = trade.account;
+  if (!L.unlocked) return h("p", { class: "t-hint warn" }, "Locked: no new real buys. You can still sell what you hold.");
+  return h("p", { class: "t-hint" }, `Limits: ${money(L.per_trade)} per trade, ${money(L.budget)} USDT in total. `,
+    h("button", { class: "link", onclick: async () => {
+      if (!confirm("Lock real-money trading? No new real buys; open real trades still sell at their stop-loss or take-profit.")) return;
+      try { await api("POST", `/api/live/${trade.cid}/lock`); await loadTrade(true); } catch (e) { alert(e.message); }
+    } }, "Lock real money"));
 }
 
 function field(label, value, hint) {
@@ -261,9 +324,11 @@ function buyForm(sig) {
     const body = { symbol: trade.symbol, source: setup ? "strategy" : "manual" };
     if (!setup || edited) { body.stop_price = stop.value; body.take_profit_price = tp.value; }
     if (risk.value) body.risk_pct = risk.value;
-    try { showResult(await api("POST", `/api/paper/${trade.cid}/orders`, body)); await loadTrade(false); }
+    if (isReal() && !confirm(`Buy ${base(trade.symbol)} with REAL money on your exchange?\n\nAt most ${trade.account.per_trade} USDT. ` +
+      "The safety checks decide the exact size.")) { btn.disabled = false; return; }
+    try { showResult(await api("POST", `${moneyPath()}/orders`, body)); await loadTrade(false); }
     catch (e) { trade.result = h("p", { class: "error" }, e.message); renderTrade($("trade")); }
-  } }, `Buy ${base(trade.symbol)}`);
+  } }, isReal() ? `Buy ${base(trade.symbol)} · REAL` : `Buy ${base(trade.symbol)}`);
   return h("div", {},
     h("p", { class: `t-hint ${setup ? "up" : "warn"}` }, setup
       ? "The chart study found a buy setup on this pair."
@@ -273,18 +338,18 @@ function buyForm(sig) {
 }
 
 function sellForm(pos) {
-  if (!pos) return h("p", { class: "muted" }, `You don't hold any ${base(trade.symbol)} in the practice account.`);
+  if (!pos) return h("p", { class: "muted" }, `You don't hold any ${base(trade.symbol)} in the ${moneyWord()} account.`);
   const last = trade.chart.bid ? Number(trade.chart.bid) : null;
   const pnl = last != null ? (last - pos.entry) * Number(pos.qty) : null;
   const btn = h("button", { class: "sell wide", onclick: async () => {
-    if (!confirm(`Sell all ${pos.qty} ${base(trade.symbol)} at the market price?`)) return;
+    if (!confirm(`Sell all ${pos.qty} ${base(trade.symbol)} at the market price${isReal() ? " with a REAL order" : ""}?`)) return;
     btn.disabled = true;
     try {
-      const f = await api("POST", `/api/paper/${trade.cid}/positions/${encodeURIComponent(trade.symbol)}/close`);
+      const f = await api("POST", `${moneyPath()}/positions/${encodeURIComponent(trade.symbol)}/close`);
       trade.result = h("div", { class: "t-result ok" }, `Sold ${f.qty} at ${fmtP(f.price)}. Profit/loss ${signed(f.realized_pnl)} USDT.`);
       await loadTrade(false);
     } catch (e) { trade.result = h("p", { class: "error" }, e.message); renderTrade($("trade")); }
-  } }, `Sell all ${base(trade.symbol)}`);
+  } }, isReal() ? `Sell all ${base(trade.symbol)} · REAL` : `Sell all ${base(trade.symbol)}`);
   return h("div", {},
     h("dl", { class: "t-dl" },
       h("dt", {}, "Amount"), h("dd", {}, `${fmtP(pos.qty)} ${base(trade.symbol)}`),

@@ -142,13 +142,14 @@ class TradingStore:
         return self._pos(r) if r else None
 
     def apply_buy(self, connection_id: str, symbol: str, qty: Decimal, price: Decimal, fee: Decimal,
-                  stop: Decimal, take_profit: Decimal | None, decision_id: str) -> None:
-        """Atomically debit cash, open or add to the position and record the fill."""
+                  stop: Decimal, take_profit: Decimal | None, decision_id: str, strict: bool = True) -> None:
+        """Atomically debit cash, open or add to the position and record the fill.
+        strict=False records a real fill that already happened even if it cost slightly more than the budget left."""
         cost = qty * price + fee
         with self._lock, self._db:
             acct = self._db.execute("SELECT cash FROM paper_accounts WHERE connection_id = ?", (connection_id,)).fetchone()
             cash = Decimal(acct["cash"])
-            if cost > cash:
+            if strict and cost > cash:
                 raise ValueError("Not enough paper cash for this order.")
             self._db.execute("UPDATE paper_accounts SET cash = ? WHERE connection_id = ?", (str(cash - cost), connection_id))
             existing = self._db.execute(
@@ -176,18 +177,21 @@ class TradingStore:
                 (connection_id, symbol, str(qty), str(price), str(fee), decision_id, now_iso()),
             )
 
-    def apply_close(self, connection_id: str, symbol: str, price: Decimal, fee_rate: Decimal, reason: str) -> dict[str, Any] | None:
-        """Atomically close the whole position. Returns the fill, or None if already closed."""
+    def apply_close(self, connection_id: str, symbol: str, price: Decimal, fee_rate: Decimal, reason: str,
+                    fee: Decimal | None = None, sold_qty: Decimal | None = None) -> dict[str, Any] | None:
+        """Atomically close the whole position. Returns the fill, or None if already closed.
+        Real fills pass the exchange's own fee and the quantity actually sold; any unsold dust counts as a loss."""
         with self._lock, self._db:
             pos = self._db.execute(
                 "SELECT * FROM paper_positions WHERE connection_id = ? AND symbol = ?", (connection_id, symbol)
             ).fetchone()
             if pos is None:
                 return None
-            qty, avg = Decimal(pos["qty"]), Decimal(pos["avg_price"])
+            pos_qty, avg = Decimal(pos["qty"]), Decimal(pos["avg_price"])
+            qty = pos_qty if sold_qty is None else sold_qty
             proceeds = qty * price
-            fee = proceeds * fee_rate
-            pnl = proceeds - fee - qty * avg
+            fee = proceeds * fee_rate if fee is None else fee
+            pnl = proceeds - fee - pos_qty * avg
             acct = self._db.execute("SELECT cash FROM paper_accounts WHERE connection_id = ?", (connection_id,)).fetchone()
             self._db.execute(
                 "UPDATE paper_accounts SET cash = ? WHERE connection_id = ?",
@@ -202,6 +206,19 @@ class TradingStore:
                 fill,
             )
             return fill
+
+    def remove_position(self, connection_id: str, symbol: str) -> None:
+        """Forget a position without a fill (the coins are no longer on the exchange)."""
+        self._exec("DELETE FROM paper_positions WHERE connection_id = ? AND symbol = ?", (connection_id, symbol))
+
+    def adjust_account(self, connection_id: str, delta: Decimal) -> None:
+        """Raise or lower both the starting balance and the cash, e.g. when a real-money budget changes."""
+        with self._lock, self._db:
+            a = self._db.execute("SELECT * FROM paper_accounts WHERE connection_id = ?", (connection_id,)).fetchone()
+            if Decimal(a["cash"]) + delta < 0:
+                raise ValueError("budget below what is already in use")
+            self._db.execute("UPDATE paper_accounts SET starting_balance = ?, cash = ? WHERE connection_id = ?",
+                             (str(Decimal(a["starting_balance"]) + delta), str(Decimal(a["cash"]) + delta), connection_id))
 
     def set_stop(self, position_id: int, stop: Decimal) -> None:
         self._exec("UPDATE paper_positions SET stop_price = ? WHERE id = ?", (str(stop), position_id))

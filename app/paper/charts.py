@@ -33,7 +33,7 @@ def _signal_summary(sig: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def markets_view(paper: "PaperTradingService", connection_id: str) -> dict[str, Any]:
+async def markets_view(paper: "PaperTradingService", connection_id: str, book: str | None = None) -> dict[str, Any]:
     conn = paper._paper_connection(connection_id)
     tf = TIMEFRAME_SECONDS[paper.strategy_config().timeframe]
     rows = []
@@ -47,7 +47,7 @@ async def markets_view(paper: "PaperTradingService", connection_id: str) -> dict
         rows.append({
             "symbol": symbol, "last": last, "bid": str(t.bid) if t else None, "ask": str(t.ask) if t else None,
             "change_24h_pct": round((last / ref - 1) * 100, 2) if last and ref else None,
-            "holding": paper.trading.position(connection_id, symbol) is not None,
+            "holding": paper.trading.position(book or connection_id, symbol) is not None,
             **_signal_summary(sig),
         })
     rows.sort(key=lambda r: (r["status"] == "BUY_SETUP", r["score"]), reverse=True)
@@ -55,7 +55,7 @@ async def markets_view(paper: "PaperTradingService", connection_id: str) -> dict
     return {"exchange": conn["exchange"], "timeframe": paper.strategy_config().timeframe, "best": best, "markets": rows}
 
 
-async def chart_view(paper: "PaperTradingService", connection_id: str, symbol: str) -> dict[str, Any]:
+async def chart_view(paper: "PaperTradingService", connection_id: str, symbol: str, book: str | None = None) -> dict[str, Any]:
     conn = paper._paper_connection(connection_id)
     cfg = paper.strategy_config()
     candles = await _candles(paper, conn["exchange"], symbol)
@@ -64,10 +64,10 @@ async def chart_view(paper: "PaperTradingService", connection_id: str, symbol: s
     slow = ema(closes, cfg.ema_slow) if closes else []
     keep = slice(-CHART_CANDLES, None)
     sig = await paper._signal_for(conn, symbol)
-    pos = paper.trading.position(connection_id, symbol)
+    pos = paper.trading.position(book or connection_id, symbol)
     first_ms = candles[-CHART_CANDLES:][0].open_time_ms if candles else 0
     markers = []
-    for f in paper.trading.fills(connection_id, 200):
+    for f in paper.trading.fills(book or connection_id, 200):
         if f["symbol"] != symbol:
             continue
         ms = int(datetime.fromisoformat(f["at"]).timestamp() * 1000)

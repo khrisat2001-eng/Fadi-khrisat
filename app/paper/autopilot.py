@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.connections.service import PortalError
 from app.connections.store import now_iso
@@ -22,6 +22,9 @@ from app.strategy.config import style_of
 
 from .engine import PaperTradingService
 from .home import fmt_num
+
+if TYPE_CHECKING:
+    from app.live.engine import LiveTradingService
 
 log = logging.getLogger("app.autopilot")
 
@@ -48,15 +51,27 @@ def plain_reason(reason: str) -> str:
 
 
 class Autopilot:
-    def __init__(self, paper: PaperTradingService):
+    """One instance trades practice money; a second one, given `live`, trades the real-money book."""
+
+    def __init__(self, paper: PaperTradingService, live: "LiveTradingService | None" = None):
         self.paper = paper
+        self.live = live
+        self.key = STATE_KEY if live is None else STATE_KEY + "_live"
+        self.word = "paper" if live is None else "real money"
         # Last check per connection and pair, for the Home screen. Not persisted: rebuilt on the next run.
         self.last_checks: dict[str, dict[str, dict[str, Any]]] = {}
         self.last_run_at: str | None = None
 
     # --- on/off -------------------------------------------------------------------------
     def _state(self) -> dict[str, Any]:
-        return self.paper.trading.get_setting(STATE_KEY) or {}
+        return self.paper.trading.get_setting(self.key) or {}
+
+    def book(self, connection_id: str) -> str:
+        """Whose money: the practice account, or the real-money book."""
+        if self.live is None:
+            return connection_id
+        from app.live.engine import book_id
+        return book_id(connection_id)
 
     def status(self, connection_id: str) -> dict[str, Any]:
         st = self._state().get(connection_id) or {}
@@ -77,7 +92,9 @@ class Autopilot:
             out.append("Emergency stop is on, so nothing new is bought. Turn it off under Safety settings.")
         if conn["state"] != "PAPER":
             out.append(f"{ex} is not in paper-trading mode, so Auto-trade is not checking it.")
-        if self.paper.trading.get_account(connection_id) is None:
+        if self.live is not None and not self.live.can_buy(connection_id):
+            out.append("Real-money trading is locked for this exchange, so Auto-trade can only sell what it already holds.")
+        elif self.paper.trading.get_account(self.book(connection_id)) is None:
             out.append("There is no practice account yet. Create one on the Trade tab.")
         if conn["health"] != "ok":
             out.append(f"The {ex} connection is not healthy ({conn['health']}). Check it on the Exchanges tab. "
@@ -95,15 +112,17 @@ class Autopilot:
 
     def set_on(self, connection_id: str, on: bool) -> dict[str, Any]:
         conn = self.paper._paper_connection(connection_id)
-        if on and self.paper.trading.get_account(connection_id) is None:
+        if on and self.live is not None and not self.live.can_buy(connection_id):
+            raise PortalError("Unlock real-money trading for this exchange first.", 409)
+        if on and self.paper.trading.get_account(self.book(connection_id)) is None:
             raise PortalError("Create a paper account first.", 409)
         state = self._state()
         prev = state.get(connection_id) or {}
         state[connection_id] = {"on": on, "since": now_iso(), "done": prev.get("done", {})}
-        self.paper.trading.set_setting(STATE_KEY, state)
-        self.paper.store.audit(connection_id, "autopilot_on" if on else "autopilot_off", "")
-        self.paper.store.add_alert(connection_id, "info",
-                                   f"Autopilot turned {'ON' if on else 'OFF'} for {conn['exchange'].upper()} paper trading.")
+        self.paper.trading.set_setting(self.key, state)
+        self.paper.store.audit(connection_id, ("autopilot_on" if on else "autopilot_off") + ("" if self.live is None else "_live"), "")
+        self.paper.store.add_alert(connection_id, "critical" if on and self.live is not None else "info",
+                                   f"Auto-trade turned {'ON' if on else 'OFF'} for {conn['exchange'].upper()} {self.word}.")
         if not on:
             self.last_checks.pop(connection_id, None)
         return self.status(connection_id)
@@ -112,7 +131,7 @@ class Autopilot:
         state = self._state()
         entry = state.setdefault(connection_id, {"on": True, "since": now_iso(), "done": {}})
         entry.setdefault("done", {})[symbol] = candle_time_ms
-        self.paper.trading.set_setting(STATE_KEY, state)
+        self.paper.trading.set_setting(self.key, state)
 
     # --- the run ------------------------------------------------------------------------
     async def run_once(self) -> list[dict[str, Any]]:
@@ -123,7 +142,7 @@ class Autopilot:
             if not st.get("on"):
                 continue
             conn = self.paper.store.get_connection(cid)
-            if conn is None or conn["state"] != "PAPER" or self.paper.trading.get_account(cid) is None:
+            if conn is None or conn["state"] != "PAPER" or self.paper.trading.get_account(self.book(cid)) is None:
                 continue
             attempted += await self._run_connection(conn, st.get("done", {}))
         return attempted
@@ -137,9 +156,12 @@ class Autopilot:
                 checks[symbol] = self._check(symbol, "paused", "Emergency stop is on, so no new trades.")
             return attempted
         for symbol in conn["selected_pairs"]:
-            pos = self.paper.trading.position(cid, symbol)
+            pos = self.paper.trading.position(self.book(cid), symbol)
             if pos is not None:
                 checks[symbol] = await self._manage(conn, pos)
+                continue
+            if self.live is not None and not self.live.can_buy(cid):
+                checks[symbol] = self._check(symbol, "paused", "Real-money trading is locked, so nothing new is bought.")
                 continue
             try:
                 sig = await self.paper._signal_for(conn, symbol)
@@ -189,9 +211,9 @@ class Autopilot:
         after_entry = candle_open >= datetime.fromisoformat(pos["opened_at"])
         if cfg.exit_on_trend_break and after_entry and m["close"] < m["ema_fast"]:
             why = f"a candle closed at {fmt_num(m['close'])}, below the fast average {fmt_num(m['ema_fast'])}."
-            if self.paper.strategy_exit(conn["id"], symbol, "the trend weakened: " + why):
+            if await self._exit(conn["id"], symbol, "the trend weakened: " + why):
                 return self._check(symbol, "sold", "Sold because the trend weakened: " + why)
-            return self._check(symbol, "holding", "Wants to sell (trend weakened) but has no fresh price yet. Will retry.")
+            return self._check(symbol, "holding", "Wants to sell (trend weakened) but the sale has not gone through yet. Will retry.")
         if cfg.trailing_stop and m.get("atr"):
             close = Decimal(str(m["close"]))
             dist = max(Decimal(str(cfg.stop_atr)) * Decimal(str(m["atr"])), close * Decimal(str(cfg.min_stop_pct)) / 100)
@@ -199,7 +221,7 @@ class Autopilot:
             new_stop = new_stop.quantize(Decimal("1e-8"))
             if new_stop > pos["stop_price"]:
                 try:
-                    self.paper.update_stop(conn["id"], symbol, new_stop)
+                    self.paper.update_stop(conn["id"], symbol, new_stop, book=self.book(conn["id"]))
                     return self._check(symbol, "holding", f"Price rose, so the stop-loss moved up to {fmt_num(new_stop)} "
                                        "to protect profit. It never moves down.")
                 except PortalError:
@@ -211,20 +233,28 @@ class Autopilot:
     async def _enter(self, conn: dict[str, Any], symbol: str) -> dict[str, Any]:
         req = TradeRequest(conn["id"], symbol, "buy", None, None, None, source="strategy", automatic=True)
         try:
-            result = await self.paper.place_order(req)
+            result = await (self.paper.place_order(req) if self.live is None else self.live.place_order(req))
         except PortalError as exc:
             result = {"decision": {"status": "REJECT", "summary": exc.message}, "fill": None}
         result["stop"], result["target"] = req.stop_price, req.take_profit_price
         ex = conn["exchange"].upper()
-        if result.get("fill"):
+        if result.get("fill") and self.live is not None:
+            pass  # the real-money engine already raised its own REAL alert
+        elif result.get("fill"):
             f = result["fill"]
             self.paper.store.add_alert(conn["id"], "info",
                                        f"Autopilot bought {fmt_num(f['qty'])} {symbol} on {ex} (paper) at {fmt_num(f['price'])}. "
                                        f"Stop {fmt_num(req.stop_price)}, target {fmt_num(req.take_profit_price)}.")
         elif result["decision"]["status"] != "WAIT":
             self.paper.store.add_alert(conn["id"], "info",
-                                       f"Autopilot saw a buy setup on {ex} {symbol} but did not trade: {result['decision']['summary']}")
+                                       f"Auto-trade ({self.word}) saw a buy setup on {ex} {symbol} but did not trade: "
+                                       f"{result['decision']['summary']}")
         return result
+
+    async def _exit(self, connection_id: str, symbol: str, why: str) -> bool:
+        if self.live is None:
+            return bool(self.paper.strategy_exit(connection_id, symbol, why))
+        return await self.live.sell(connection_id, symbol, "strategy_exit", why) is not None
 
     @staticmethod
     def _check(symbol: str, state: str, text: str) -> dict[str, Any]:

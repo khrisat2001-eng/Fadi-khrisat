@@ -1,6 +1,6 @@
 # Fadi Trading Platform
 
-Crypto trading platform for OKX and KuCoin. Live trading is disabled.
+Crypto trading platform for OKX and KuCoin. Practice money by default; real-money trading only after you unlock it, inside limits you set.
 
 ## What's here so far
 
@@ -10,7 +10,7 @@ Crypto trading platform for OKX and KuCoin. Live trading is disabled.
 - Keys are validated with a read-only request. Keys with withdrawal or transfer permission are rejected and deleted.
 - Credentials are stored with envelope encryption (AES-256-GCM, a data key per connection, bound to that connection). The browser only ever sees the last 4 characters of the key.
 - Connection management: status, health, balances, last sync, test, sync, replace key, disconnect, alerts for authentication failures and connectivity problems, rate limiting with backoff, clock resync.
-- Paper trading can be switched on per connection. Live trading is locked and the API refuses it.
+- Paper trading can be switched on per connection. Real-money trading is locked until you unlock it (see Real money below).
 
 **Market data and paper trading** (Phase 2):
 
@@ -58,6 +58,29 @@ unhealthy exchange connection, or live prices not coming in (OKX and KuCoin refu
 **Style** picks how picky the strategy is: *Careful* waits for strong breakouts on high volume (few trades),
 *Active* accepts smaller breakouts and less volume (more trades). Stops are never closer than 0.6% of the price, so
 fees don't eat the reward and the safety checks don't block every setup in calm markets.
+
+## Real money
+
+The Trade tab has a **Practice money / Real money** switch. Real money keeps its own account, history and Auto-trade switch,
+so practice results never mix with real ones. Real money stays locked until all of this is true:
+
+1. **Server switch.** In Railway, open the service's Variables and add `LIVE_TRADING` with the value `on`. Without it the
+   server refuses every real order, whatever the page says.
+2. **A key that can trade.** OKX: tick *Trade*. KuCoin: tick *Spot*. Never Withdraw or Transfer; keys with those are still
+   refused. Swap the key with *Replace key* on the Exchanges tab.
+3. **Your confirmation.** Pick Real money on the Trade tab, set the most per trade and the most in total (default 20 and 100
+   USDT), type `REAL MONEY` and press Unlock.
+
+Then every real buy passes the same safety checks as practice trades, sized from your real-money budget, then capped at the
+per-trade limit and the USDT really available. Orders are market orders. If the exchange's answer is lost, the app looks
+the order up by its own id instead of sending it again. A red **REAL MONEY ON** badge shows in the top bar while any
+exchange is unlocked. *Lock real money* stops new real buys; open real trades keep their stop-loss and take-profit.
+
+Know before you unlock:
+- Stop-loss and take-profit are watched by this app on every price tick and sold at market. They are not placed on the
+  exchange, so they only work while the server runs. A restart or a gap can sell below the stop.
+- The order code follows the OKX and KuCoin API docs and is tested against a simulated exchange only. Start with the small
+  default limits and check the first trades on the exchange itself.
 
 ## Run locally
 

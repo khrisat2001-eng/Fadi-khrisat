@@ -15,6 +15,9 @@ class Settings:
         default_factory=lambda: [ip.strip() for ip in os.environ.get("SERVER_EGRESS_IPS", "").split(",") if ip.strip()]
     )
     secure_cookies: bool = field(default_factory=lambda: os.environ.get("SECURE_COOKIES", "true").lower() != "false")
+    # Server-side master switch for real-money orders. Off unless the owner sets LIVE_TRADING=on on the server,
+    # so real trading can never be switched on from the web page alone.
+    live_trading: bool = field(default_factory=lambda: os.environ.get("LIVE_TRADING", "").strip().lower() == "on")
 
 
 def explain_setting(name: str, value: str, problem: str) -> str:

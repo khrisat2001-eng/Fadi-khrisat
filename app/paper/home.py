@@ -5,6 +5,8 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from app.live.engine import LiveTradingService
+
     from .autopilot import Autopilot
     from .engine import PaperTradingService
 
@@ -62,7 +64,7 @@ def activity(paper: "PaperTradingService", connection_id: str, exchange: str, li
     return items[:limit]
 
 
-def home_view(paper: "PaperTradingService", autopilot: "Autopilot") -> dict[str, Any]:
+def home_view(paper: "PaperTradingService", autopilot: "Autopilot", live: "LiveTradingService | None" = None) -> dict[str, Any]:
     accounts = []
     feed: list[dict[str, Any]] = []
     for conn in paper.store.list_connections():
@@ -81,7 +83,8 @@ def home_view(paper: "PaperTradingService", autopilot: "Autopilot") -> dict[str,
     connected = [c for c in paper.store.list_connections() if c["state"] in ("CONNECTED_READONLY", "PAPER")]
     return {
         "mode": "paper",
-        "live_trading": "locked",
+        "live_trading": "on" if live and live.unlocked_exchanges() else "locked",
+        "real_money_exchanges": live.unlocked_exchanges() if live else [],
         "kill_switch": paper.kill_switch(),
         "connected_exchanges": [c["exchange"] for c in connected],
         "accounts": accounts,

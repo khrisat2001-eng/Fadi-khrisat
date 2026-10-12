@@ -82,7 +82,7 @@ class PaperTradingService:
             if c["state"] == "PAPER":
                 want.setdefault(c["exchange"], set()).update(c["selected_pairs"])
         for p in self.trading.positions():
-            c = self.store.get_connection(p["connection_id"])
+            c = self.store.get_connection(p["connection_id"].split("#")[0])  # "<id>#live" books belong to <id>
             if c:  # keep watching prices of open positions, even if the pair was deselected
                 want.setdefault(c["exchange"], set()).add(p["symbol"])
         return want
@@ -118,9 +118,11 @@ class PaperTradingService:
         self.trading.delete_account(connection_id)
 
     # --- entries -----------------------------------------------------------------------
-    async def build_context(self, conn: dict[str, Any], symbol: str, source: str = "manual") -> GateContext:
-        account = self.trading.get_account(conn["id"])
-        positions = self.trading.positions(conn["id"])
+    async def build_context(self, conn: dict[str, Any], symbol: str, source: str = "manual", book: str | None = None) -> GateContext:
+        """book = whose money: the paper account (the connection id) or a real-money book (see app/live)."""
+        book = book or conn["id"]
+        account = self.trading.get_account(book)
+        positions = self.trading.positions(book)
         marks = {}
         for p in positions:
             t = self.market.latest(conn["exchange"], p["symbol"])
@@ -142,7 +144,7 @@ class PaperTradingService:
             account=account,
             positions=positions,
             marks=marks,
-            realized_pnl_today=self.trading.realized_pnl_since(conn["id"], utc_day_start_iso()),
+            realized_pnl_today=self.trading.realized_pnl_since(book, utc_day_start_iso()),
             suspensions=self.trading.active_suspensions(),
             kill_switch=self.kill_switch(),
             pair_min_size=Decimal(min_size) if min_size else None,
@@ -220,9 +222,9 @@ class PaperTradingService:
                                  f"P&L {Decimal(fill['realized_pnl']):.2f} {PAPER_QUOTE}.")
         return fill
 
-    def update_stop(self, connection_id: str, symbol: str, new_stop: Decimal) -> dict[str, Any]:
+    def update_stop(self, connection_id: str, symbol: str, new_stop: Decimal, book: str | None = None) -> dict[str, Any]:
         conn = self.store.get_connection(connection_id)
-        pos = self.trading.position(connection_id, symbol)
+        pos = self.trading.position(book or connection_id, symbol)
         if conn is None or pos is None:
             raise PortalError("No open position for that pair.", 404)
         if new_stop <= pos["stop_price"]:
@@ -232,7 +234,7 @@ class PaperTradingService:
             raise PortalError("The new stop must be below the current bid.")
         self.trading.set_stop(pos["id"], new_stop)
         self.store.audit(connection_id, "stop_tightened", f"{symbol} {pos['stop_price']} -> {new_stop}")
-        return self.account_view(connection_id)
+        return self.account_view(connection_id, book)
 
     def on_ticker(self, t: Ticker) -> None:
         for pos in self.trading.positions():
@@ -255,16 +257,17 @@ class PaperTradingService:
                                          f"{Decimal(fill['price']):.6f}, P&L {Decimal(fill['realized_pnl']):.2f} {PAPER_QUOTE}.")
 
     # --- views -------------------------------------------------------------------------
-    def account_view(self, connection_id: str) -> dict[str, Any]:
+    def account_view(self, connection_id: str, book: str | None = None) -> dict[str, Any]:
         conn = self.store.get_connection(connection_id)
         if conn is None:
             raise PortalError("Connection not found.", 404)
-        acct = self.trading.get_account(connection_id)
+        book = book or connection_id
+        acct = self.trading.get_account(book)
         if acct is None:
             return {"connection_id": connection_id, "account": None}
         positions = []
         equity = acct["cash"]
-        for p in self.trading.positions(connection_id):
+        for p in self.trading.positions(book):
             t = self.market.latest(conn["exchange"], p["symbol"])
             mark = t.bid if t else p["avg_price"]
             value = p["qty"] * mark
@@ -283,8 +286,8 @@ class PaperTradingService:
                 "cash": f"{acct['cash']:.2f}",
                 "equity": f"{equity:.2f}",
                 "total_pnl": f"{equity - acct['starting_balance']:.2f}",
-                "realized_pnl_today": f"{self.trading.realized_pnl_since(connection_id, utc_day_start_iso()):.2f}",
+                "realized_pnl_today": f"{self.trading.realized_pnl_since(book, utc_day_start_iso()):.2f}",
             },
             "positions": positions,
-            "fills": self.trading.fills(connection_id, 50),
+            "fills": self.trading.fills(book, 50),
         }

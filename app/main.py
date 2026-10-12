@@ -29,6 +29,7 @@ from app.news.classifier import Classifier
 from app.news.config import NewsConfig
 from app.news.service import NewsError, NewsService
 from app.news.sources import Fetcher, http_fetch
+from app.live.engine import LiveTradingService, book_id
 from app.paper.autopilot import Autopilot
 from app.paper.charts import chart_view, markets_view
 from app.paper.engine import PaperTradingService
@@ -115,6 +116,15 @@ class StyleIn(BaseModel):
     style: str = Field(pattern="^(careful|active)$")
 
 
+class UnlockIn(BaseModel):
+    confirm: str = Field(max_length=40)
+
+
+class LimitsIn(BaseModel):
+    per_trade: Decimal = Field(ge=5, le=1_000_000)
+    budget: Decimal = Field(ge=5, le=10_000_000)
+
+
 class AutopilotIn(BaseModel):
     on: bool
 
@@ -157,6 +167,9 @@ def create_app(
     news = NewsService(store, trading, market, news_classifier, news_fetcher)
     paper = PaperTradingService(service, trading, market, DecisionGate(), CandleService(candle_fetcher), news)
     autopilot = Autopilot(paper)
+    live = LiveTradingService(paper, settings.live_trading)
+    live_autopilot = Autopilot(paper, live)
+    service.live_lookup = lambda cid: live.can_buy(cid)
     if run_news_monitor is None:
         run_news_monitor = run_health_monitor
     if run_autopilot is None:
@@ -166,6 +179,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         tasks = []
+        live._loop = asyncio.get_running_loop()  # real stop-losses are sold on this loop
         if start_market_data:
             await paper.sync_streams()
         if run_health_monitor:
@@ -173,7 +187,7 @@ def create_app(
         if run_news_monitor:
             tasks.append(asyncio.create_task(_news_loop(news)))
         if run_autopilot:
-            tasks.append(asyncio.create_task(_autopilot_loop(autopilot)))
+            tasks.append(asyncio.create_task(_autopilot_loop(autopilot, live_autopilot)))
         yield
         for task in tasks:
             task.cancel()
@@ -185,6 +199,8 @@ def create_app(
     app.state.service = service
     app.state.paper = paper
     app.state.autopilot = autopilot
+    app.state.live = live
+    app.state.live_autopilot = live_autopilot
     app.state.market = market
     app.state.news = news
 
@@ -400,16 +416,58 @@ def create_app(
         return status
 
     @app.get("/api/markets/{cid}", dependencies=auth)
-    async def markets(cid: str):
-        return await markets_view(paper, cid)
+    async def markets(cid: str, mode: str = "paper"):
+        return await markets_view(paper, cid, book_id(cid) if mode == "real" else None)
 
     @app.get("/api/chart/{cid}/{symbol}", dependencies=auth)
-    async def chart(cid: str, symbol: str):
-        return await chart_view(paper, cid, symbol)
+    async def chart(cid: str, symbol: str, mode: str = "paper"):
+        return await chart_view(paper, cid, symbol, book_id(cid) if mode == "real" else None)
+
+    # --- Real mode (real money, inside the owner's limits) -------------------------------
+    @app.get("/api/live/{cid}", dependencies=auth)
+    async def live_view(cid: str):
+        return {**live.view(cid), "autotrade": live_autopilot.status(cid)}
+
+    @app.post("/api/live/{cid}/unlock", dependencies=auth)
+    async def live_unlock(cid: str, body: UnlockIn):
+        return await live.unlock(cid, body.confirm)
+
+    @app.post("/api/live/{cid}/lock", dependencies=auth)
+    async def live_lock(cid: str):
+        if live_autopilot.status(cid)["on"]:
+            live_autopilot.set_on(cid, False)
+        return live.lock(cid)
+
+    @app.put("/api/live/{cid}/limits", dependencies=auth)
+    async def live_limits(cid: str, body: LimitsIn):
+        return live.set_limits(cid, body.per_trade, body.budget)
+
+    @app.post("/api/live/{cid}/orders", dependencies=auth)
+    async def live_order(cid: str, body: PaperOrderIn):
+        req = TradeRequest(cid, body.symbol, "buy", body.stop_price, body.take_profit_price, body.risk_pct, source=body.source)
+        result = await live.place_order(req)
+        await resync_streams()
+        return result
+
+    @app.post("/api/live/{cid}/positions/{symbol}/close", dependencies=auth)
+    async def live_close(cid: str, symbol: str):
+        return await live.close_position(cid, symbol)
+
+    @app.put("/api/live/{cid}/positions/{symbol}/stop", dependencies=auth)
+    async def live_stop(cid: str, symbol: str, body: StopIn):
+        return paper.update_stop(cid, symbol, body.stop_price, book=book_id(cid))
+
+    @app.put("/api/live/{cid}/autotrade", dependencies=auth)
+    async def live_autotrade(cid: str, body: AutopilotIn):
+        status = live_autopilot.set_on(cid, body.on)
+        if body.on:
+            await live_autopilot.run_once()
+            status = live_autopilot.status(cid)
+        return status
 
     @app.get("/api/home", dependencies=auth)
     async def home():
-        return home_view(paper, autopilot)
+        return home_view(paper, autopilot, live)
 
     @app.get("/api/risk/kill-switch", dependencies=auth)
     async def get_kill_switch():
@@ -515,13 +573,14 @@ async def _health_loop(service: ConnectionService, paper: PaperTradingService, i
             log.error("Health check loop error: %s", type(exc).__name__)
 
 
-async def _autopilot_loop(autopilot: Autopilot) -> None:
+async def _autopilot_loop(*autopilots: Autopilot) -> None:
     while True:
         await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
-        try:
-            await autopilot.run_once()
-        except Exception as exc:  # keep running no matter what
-            log.error("Autopilot loop error: %s", type(exc).__name__)
+        for autopilot in autopilots:
+            try:
+                await autopilot.run_once()
+            except Exception as exc:  # keep running no matter what
+                log.error("Autopilot loop error: %s", type(exc).__name__)
 
 
 async def _news_loop(news: NewsService) -> None:

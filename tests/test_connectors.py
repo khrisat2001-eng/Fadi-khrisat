@@ -221,3 +221,80 @@ def test_unexpected_errors_show_what_the_exchange_said():
         "The exchange said: code 51155, Restricted region.")
     assert "country" in ExchangeError(ErrorKind.UNEXPECTED, detail="http 403").plain_message
     assert ExchangeError(ErrorKind.INVALID_KEY, "50111", "x").plain_message.startswith("The exchange doesn't recognise")
+
+
+# --- spot orders (Real mode) ---------------------------------------------------------
+async def test_okx_market_buy_body_and_fill_parsing():
+    seen = []
+
+    def handler(req):
+        seen.append(req)
+        if req.method == "POST":
+            return httpx.Response(200, json={"code": "0", "data": [{"ordId": "777", "clOrdId": "fkabc", "sCode": "0", "sMsg": ""}]})
+        return httpx.Response(200, json={"code": "0", "data": [{
+            "ordId": "777", "clOrdId": "fkabc", "side": "buy", "state": "filled", "accFillSz": "0.2",
+            "avgPx": "100", "fee": "-0.0002", "feeCcy": "BTC"}]})
+
+    c = make(OkxConnector, handler)
+    from decimal import Decimal
+    assert await c.place_market_order("BTC-USDT", "buy", Decimal("0.2"), "fkabc") == "777"
+    body = json.loads(seen[0].content)
+    assert body == {"instId": "BTC-USDT", "tdMode": "cash", "side": "buy", "ordType": "market", "sz": "0.2",
+                    "clOrdId": "fkabc", "tgtCcy": "base_ccy"}
+    o = await c.get_order("BTC-USDT", order_id="777")
+    assert seen[1].url.path == "/api/v5/trade/order" and "ordId=777" in str(seen[1].url)
+    assert o.status == "filled" and o.filled_qty == Decimal("0.1998")  # fee taken in BTC
+    assert o.fee_quote == Decimal("0.02")
+
+
+async def test_okx_order_refusal_reports_the_real_reason_and_is_not_resent():
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, json={"code": "1", "msg": "", "data": [{"ordId": "", "sCode": "51008", "sMsg": "Insufficient balance"}]})
+
+    c = make(OkxConnector, handler)
+    from decimal import Decimal
+    with pytest.raises(ExchangeError) as e:
+        await c.place_market_order("BTC-USDT", "buy", Decimal("1"), "fkx")
+    assert e.value.exchange_code == "51008" and "Insufficient" in e.value.plain_message
+    assert len(calls) == 1
+
+
+async def test_order_post_is_never_retried_on_network_error():
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        raise httpx.ReadTimeout("slow")
+
+    c = make(KucoinConnector, handler)
+    c._hf = False
+    from decimal import Decimal
+    with pytest.raises(ExchangeError) as e:
+        await c.place_market_order("BTC-USDT", "sell", Decimal("1"), "fkx")
+    assert e.value.kind == ErrorKind.NETWORK and len(calls) == 1
+
+
+async def test_kucoin_hf_order_paths_and_parsing():
+    seen = []
+
+    def handler(req):
+        seen.append(req)
+        if req.url.path == "/api/v1/hf/accounts/opened":
+            return httpx.Response(200, json={"code": "200000", "data": True})
+        if req.method == "POST":
+            return httpx.Response(200, json={"code": "200000", "data": {"orderId": "k1"}})
+        return httpx.Response(200, json={"code": "200000", "data": {
+            "id": "k1", "clientOid": "fkz", "side": "sell", "active": False, "cancelExist": False,
+            "dealSize": "0.5", "dealFunds": "50", "fee": "0.05", "feeCurrency": "USDT"}})
+
+    c = make(KucoinConnector, handler)
+    from decimal import Decimal
+    assert await c.place_market_order("BTC-USDT", "sell", Decimal("0.5"), "fkz") == "k1"
+    assert seen[1].url.path == "/api/v1/hf/orders"
+    assert json.loads(seen[1].content) == {"clientOid": "fkz", "side": "sell", "symbol": "BTC-USDT", "type": "market", "size": "0.5"}
+    o = await c.get_order("BTC-USDT", client_id="fkz")
+    assert seen[2].url.path == "/api/v1/hf/orders/client-order/fkz"
+    assert o.status == "filled" and o.avg_price == Decimal("100") and o.fee_quote == Decimal("0.05")

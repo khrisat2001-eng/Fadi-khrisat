@@ -8,7 +8,7 @@ States
 
 Health (independent of state): ok, degraded (exchange unreachable), auth_failed.
 
-Live trading does not exist in this module. request_live() always refuses.
+Real-money trading lives in app/live and is unlocked there; this module only reports it.
 """
 from __future__ import annotations
 
@@ -66,8 +66,8 @@ def audit_permissions(exchange_id: str, info: KeyInfo) -> list[Issue]:
             "This key can transfer funds between accounts. This app never moves funds, so please create a key without Transfer permission."))
     if Permission.TRADE in info.permissions:
         issues.append(Issue("warning", "trade_enabled",
-            "This key can place trades. That isn't needed yet: market data and paper trading only need read access. "
-            "We recommend replacing it with a read-only key until you decide on live trading."))
+            "This key can place trades. Practice trading only needs read access; trading permission is used only if you "
+            "unlock Real money on the Trade tab."))
     if Permission.UNKNOWN in info.permissions:
         issues.append(Issue("warning", "permissions_unverified",
             f"We couldn't read this key's full permission list from {guide.display_name}. "
@@ -90,6 +90,7 @@ class ConnectionService:
         self.store = store
         self.vault = vault
         self.factory = connector_factory
+        self.live_lookup: Callable[[str], bool] = lambda connection_id: False  # set by app.main once Real mode exists
 
     # --- helpers -------------------------------------------------------------
     def _get(self, connection_id: str) -> dict[str, Any]:
@@ -210,8 +211,7 @@ class ConnectionService:
         self._get(connection_id)
         self.store.audit(connection_id, "live_request_refused")
         raise PortalError(
-            "Live trading is locked. It can only be unlocked after the strategy, news monitoring, risk controls "
-            "and paper trading pass their acceptance tests, and only with your explicit authorization.",
+            "Real-money trading is locked here. Unlock it on the Trade tab: switch to Real and follow the steps there.",
             403,
         )
 
@@ -321,7 +321,7 @@ class ConnectionService:
             "state": row["state"],
             "health": row["health"],
             "trading_mode": row["trading_mode"],
-            "live_trading": False,
+            "live_trading": self.live_lookup(row["id"]),
             "key_masked": f"••••••••{row['key_hint']}" if row["key_hint"] else None,
             "permissions": row["permissions"],
             "raw_permissions": row["raw_permissions"],
