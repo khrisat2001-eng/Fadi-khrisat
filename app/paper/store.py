@@ -6,7 +6,7 @@ Decimals round-trip exactly.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -62,13 +62,17 @@ CREATE TABLE IF NOT EXISTS suspensions (
     target TEXT NOT NULL,         -- '*' | exchange id | asset code (e.g. BTC)
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    lifted_at TEXT
+    lifted_at TEXT,
+    expires_at TEXT               -- NULL = until lifted by hand
 );
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
+
+
+NEWS_SUSPENSION_HOURS = 12  # default lifetime of a suspension the news engine creates
 
 
 def utc_day_start_iso() -> str:
@@ -82,6 +86,15 @@ class TradingStore:
         self._lock = store._lock
         with self._lock:
             self._db.executescript(SCHEMA)
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(suspensions)")}
+            if "expires_at" not in cols:
+                self._db.execute("ALTER TABLE suspensions ADD COLUMN expires_at TEXT")
+            # News suspensions from before they expired on their own: give them the default lifetime now.
+            for r in self._db.execute("SELECT id, created_at FROM suspensions WHERE lifted_at IS NULL AND expires_at IS NULL "
+                                      "AND reason LIKE 'News:%'").fetchall():
+                until = datetime.fromisoformat(r["created_at"]) + timedelta(hours=NEWS_SUSPENSION_HOURS)
+                self._db.execute("UPDATE suspensions SET expires_at = ? WHERE id = ?", (until.isoformat(timespec="seconds"), r["id"]))
+            self._db.commit()
 
     def _all(self, q: str, args: tuple = ()) -> list[dict[str, Any]]:
         with self._lock:
@@ -249,11 +262,13 @@ class TradingStore:
         return rows
 
     # --- suspensions ------------------------------------------------------------------
-    def add_suspension(self, scope: str, target: str, reason: str) -> None:
-        self._exec("INSERT INTO suspensions (scope, target, reason, created_at) VALUES (?, ?, ?, ?)", (scope, target, reason, now_iso()))
+    def add_suspension(self, scope: str, target: str, reason: str, expires_at: str | None = None) -> None:
+        self._exec("INSERT INTO suspensions (scope, target, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                   (scope, target, reason, now_iso(), expires_at))
 
     def lift_suspension(self, suspension_id: int) -> None:
         self._exec("UPDATE suspensions SET lifted_at = ? WHERE id = ? AND lifted_at IS NULL", (now_iso(), suspension_id))
 
     def active_suspensions(self) -> list[dict[str, Any]]:
-        return self._all("SELECT * FROM suspensions WHERE lifted_at IS NULL ORDER BY id")
+        return self._all("SELECT * FROM suspensions WHERE lifted_at IS NULL AND (expires_at IS NULL OR expires_at > ?) ORDER BY id",
+                         (now_iso(),))
