@@ -99,6 +99,13 @@ class Autopilot:
         if conn["health"] != "ok":
             out.append(f"The {ex} connection is not healthy ({conn['health']}). Check it on the Exchanges tab. "
                        "If the server runs in a US region, OKX and KuCoin refuse it: move the Railway region to EU West.")
+        bases = {p.split("-")[0] for p in conn["selected_pairs"]}
+        for sp in self.paper.trading.active_suspensions():
+            if (sp["scope"], sp["target"]) == ("global", "*") or (sp["scope"] == "exchange" and sp["target"] == conn["exchange"]) \
+                    or (sp["scope"] == "asset" and sp["target"].upper() in bases):
+                what = "everything" if sp["scope"] == "global" else sp["target"].upper()
+                until = f"until {sp['expires_at'][11:16]} UTC" if sp.get("expires_at") else "until you lift it"
+                out.append(f"New buys are paused for {what} {until}: {sp['reason']} You can lift it sooner under Safety settings.")
         stream = self.paper.market.stream_state(conn["exchange"])
         if stream != "connected":
             out.append(f"Live prices from {ex} are not coming in (state: {stream}), and every buy needs a fresh price. "

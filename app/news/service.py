@@ -255,14 +255,15 @@ class NewsService:
         exchange_wide = ev["subcategory"] in ("security_incident", "exchange_incident") or not assets
 
         if incident and firm and cfg.auto_suspend_on_incidents and not self.news.has_action(ev["id"], "suspension"):
-            targets = [("exchange", ex) for ex in ev["exchanges"]] if exchange_wide and ev["exchanges"] else [("asset", a) for a in assets]
+            targets = self._suspension_targets(ev)
+            until = utcnow() + timedelta(hours=cfg.auto_suspension_hours)
             for scope, target in targets:
                 reason = f"News: {ev['title'][:180]} ({ev['confirmation'].replace('_', ' ')}; event #{ev['id']})"
-                self.trading.add_suspension(scope, target, reason)
+                self.trading.add_suspension(scope, target, reason, iso(until))
                 self.store.audit(None, "suspension_added", f"{scope} {target}: {reason}")
-                self.store.add_alert(None, "critical", f"New entries suspended for {scope} {target.upper()} because of news: "
-                                                        f"{ev['title'][:160]}. Open positions keep their stops. Lift the suspension "
-                                                        f"in Risk controls once you've reviewed it.")
+                self.store.add_alert(None, "critical", f"New buys paused for {scope} {target.upper()} for {cfg.auto_suspension_hours} hours "
+                                                        f"because of news: {ev['title'][:160]}. Open positions keep their stops. "
+                                                        "You can lift it sooner under Safety settings.")
             if targets:
                 self.news.add_action(ev["id"], "suspension", "; ".join(f"{s} {t}" for s, t in targets))
 
@@ -284,6 +285,16 @@ class NewsService:
                                  f"{ev['title'][:160]} ({verified}). Its stop stays at {pos['stop_price']}; nothing is sold "
                                  f"automatically{'' if firm else ' on an unverified report'}. Review it.")
             self.news.add_action(ev["id"], key, f"Alerted on open position {pos['symbol']} (stop {pos['stop_price']}).")
+
+    def _suspension_targets(self, ev: dict[str, Any]) -> list[tuple[str, str]]:
+        """Suspend only what the headline is about. A hack story that mentions Bitcoin in its body, or says stolen
+        funds moved through an exchange, is not a reason to stop trading Bitcoin or that exchange."""
+        head = self.registry.attribute(ev["title"])
+        if ev["subcategory"] in ("security_incident", "exchange_incident"):
+            return [("exchange", ex) for ex in head.exchanges]
+        if ev["subcategory"] in ("network_outage", "delisting"):
+            return [("asset", a) for a in head.assets]
+        return []  # restrictions and the rest: the news check weighs them, no blanket suspension
 
     # --- gate assessment -------------------------------------------------------------
     def assess(self, exchange: str, symbol: str, *, technical_setup: bool | None, order_source: str,

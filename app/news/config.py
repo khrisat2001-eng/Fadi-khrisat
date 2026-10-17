@@ -34,6 +34,8 @@ class NewsConfig(BaseModel):
     block_when_feeds_stale: bool = False
     # Credible security incidents and exchange disruptions suspend entries automatically.
     auto_suspend_on_incidents: bool = True
+    # They lift on their own after this many hours (the news check still weighs the event while it is fresh).
+    auto_suspension_hours: int = Field(12, ge=1, le=168)
     no_trade_windows: dict[str, NoTradeWindow] = Field(default_factory=lambda: {
         "high": NoTradeWindow(before_minutes=30, after_minutes=30),
         "medium": NoTradeWindow(before_minutes=15, after_minutes=15),

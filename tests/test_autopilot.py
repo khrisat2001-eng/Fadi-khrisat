@@ -175,3 +175,17 @@ def test_a_waiting_setup_is_retried_on_the_same_candle(client, paper, candle_fee
     assert "Will try again" in status["pairs"][0]["text"]
     run(client)
     assert {p["state"] for p in client.get(f"/api/autopilot/{paper}").json()["pairs"]} == {"bought"}
+
+
+def test_old_news_suspensions_get_an_end_time_and_show_as_problems(client, paper, candle_feed):  # noqa: F811
+    from app.paper.store import TradingStore
+    setup(client, paper, candle_feed)
+    trading = client.app_ref.state.paper.trading
+    # A suspension saved by an older version, which never expired, plus one the user set by hand.
+    trading._exec("INSERT INTO suspensions (scope, target, reason, created_at) VALUES "
+                  "('asset', 'BTC', 'News: Bitcoin bridge exploited', '2026-10-13T08:00:00+00:00'), "
+                  "('asset', 'ETH', 'my own pause', '2026-10-13T08:00:00+00:00')")
+    TradingStore(client.app_ref.state.service.store)  # restart: the migration runs on start-up
+    assert [s["target"] for s in trading.active_suspensions()] == ["ETH"]  # the old news one has expired
+    status = client.put(f"/api/autopilot/{paper}", json={"on": True}).json()
+    assert any("paused for ETH until you lift it" in p for p in status["problems"])

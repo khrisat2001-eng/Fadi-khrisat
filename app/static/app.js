@@ -527,7 +527,8 @@ async function renderRisk() {
         await api("POST", "/api/risk/kill-switch", { on: !ks.on, reason: "manual" }); renderRisk();
       } }, ks.on ? "Turn off" : "Emergency stop")),
     h("h3", {}, "Trading suspensions"),
-    susp.length ? h("ul", {}, susp.map((s) => h("li", {}, `${s.scope} ${s.target}: ${s.reason} `,
+    susp.length ? h("ul", {}, susp.map((s) => h("li", {}, `${s.scope} ${s.target}: ${s.reason} ` +
+      (s.expires_at ? `(lifts itself at ${fmtTime(s.expires_at)}) ` : "(until you lift it) "),
       h("button", { class: "link", onclick: async () => { await api("DELETE", `/api/risk/suspensions/${s.id}`); renderRisk(); } }, "Lift"))))
       : h("p", { class: "muted" }, "None active."),
     h("div", { class: "row" }, scope, target, reason,
